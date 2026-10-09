@@ -1,0 +1,21 @@
+{
+  "name": "backlog-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "wrangler dev --local --var LOCAL_DEV:true",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check script.js && node --check worker.js && npm test",
+    "deploy:check": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
+  }
+}
