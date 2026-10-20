@@ -10,6 +10,7 @@
 </head>
 <body>
 <div class="app">
+  <div class="session-bar"><span id="userIdentity"></span><button class="ghost" id="btnRefresh">一覧を更新</button></div>
 
   <div id="listPage">
     <header class="top">
@@ -17,7 +18,7 @@
         <h1>保守工数ダッシュボード</h1>
         <span class="sub">クライアント別 Backlog 工数管理</span>
       </div>
-      <button class="primary" id="btnAddClient" disabled>＋ クライアント追加</button>
+      <button class="primary" id="btnAddClient" disabled hidden>＋ クライアント追加</button>
     </header>
 
     <div class="section-title"><h2>クライアント一覧</h2></div>

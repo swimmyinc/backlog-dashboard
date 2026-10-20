@@ -1,45 +1,15 @@
-  // ---------------- データ ----------------
-  // ---------------- 共有ストレージ(クライアント一覧をチーム全員で共有) ----------------
-  // デプロイしたclients-store WorkerのURLをここに設定してください。
-  // 例: "https://clients-store.xxxx.workers.dev/clients"
-  const CLIENTS_API_URL = "";
-
   let clients = [];
   let backlogSettings = null;
+  let selectedSnapshot = null;
 
   async function loadClientsFromServer(){
-    if(!CLIENTS_API_URL){
-      return;
-    }
-    try{
-      const res = await fetch(CLIENTS_API_URL);
-      if(!res.ok) throw new Error('HTTP ' + res.status);
-      const body = await res.json();
-      clients = Array.isArray(body.clients) ? body.clients.map(clientForStorage) : [];
-    }catch(err){
-      console.error('クライアント一覧の読み込みに失敗しました', err);
-      showSyncBanner('クライアント一覧の読み込みに失敗しました。共有ストレージへの接続を確認してください。(' + err.message + ')', true);
-    }
+    clients = (await requestApi('/api/clients')).clients;
   }
-
-  let saveTimer = null;
-  async function saveClientsToServer(){
-    if(!CLIENTS_API_URL) return;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      try{
-        const res = await fetch(CLIENTS_API_URL, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clients: clients.map(clientForStorage) }),
-        });
-        if(!res.ok) throw new Error('HTTP ' + res.status);
-      }catch(err){
-        console.error('クライアント一覧の保存に失敗しました', err);
-        showSyncBanner('保存に失敗しました。ネットワークを確認して、もう一度操作してください。(' + err.message + ')', true);
-      }
-    }, 300);
+  function replaceClient(client){
+    const index = clients.findIndex(c => c.id === client.id);
+    if(index < 0) clients.push(client); else clients[index] = client;
   }
+  function isAdmin(){ return backlogSettings?.user.isAdmin === true; }
 
   function showSyncBanner(message, isError){
     let banner = document.getElementById('syncBanner');
@@ -60,53 +30,13 @@
   let filterText = "";
   let filterDirector = "";
 
-  // サンプル課題プール(クライアントごとに軽く配分を変える)
-  const issuePool = [
-    { key:"142", summary:"商品マスタ画面の表示崩れ修正", status:"完了", type:"バグ", est:4, act:3.5 },
-    { key:"145", summary:"在庫連携バッチのエラー調査", status:"完了", type:"保守対応", est:6, act:7 },
-    { key:"148", summary:"月次レポート出力項目の追加", status:"完了", type:"機能追加", est:5, act:4.5 },
-    { key:"151", summary:"ログイン画面のアクセシビリティ改善", status:"完了", type:"改善", est:3, act:2.5 },
-    { key:"153", summary:"検索APIのレスポンス遅延対応", status:"完了", type:"バグ", est:4, act:2 },
-    { key:"156", summary:"権限管理画面のリニューアル", status:"処理中", type:"機能追加", est:8, act:3 },
-    { key:"158", summary:"通知メールテンプレートの整理", status:"未対応", type:"改善", est:3, act:0 },
-    { key:"159", summary:"CSVエクスポートの文字化け調査", status:"処理中", type:"バグ", est:3, act:1 },
-    { key:"162", summary:"発注書PDFの自動生成", status:"完了", type:"発注", est:5, act:5 },
-  ];
-
-  function hashSeed(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))>>>0; } return h; }
-
-  // 完了/処理中(対応中)/未対応 の3分類だけを対象にする
-  function splitByStatus(issues){
-    return {
-      completed: issues.filter(i => i.status === '完了'),
-      inProgress: issues.filter(i => i.status === '処理中'),
-      notStarted: issues.filter(i => i.status === '未対応'),
-    };
-  }
-
-  function getSampleIssuesForClient(client){
-    const seed = hashSeed(client.id + client.from + client.to);
-    const items = issuePool.filter(i => i.type !== "発注").filter((_, idx) => (seed + idx) % 3 !== 0);
-    const withKey = items.map(i => ({ ...i, issueKey: client.name.slice(0,4).toUpperCase() + "-" + i.key }));
-    return splitByStatus(withKey);
-  }
-
-  // 実データ(Backlogから取得済み)があればそれを、なければサンプルを返す
   function getIssuesForClient(client){
-    return client.data || getSampleIssuesForClient(client);
-  }
-
-  // 共有保存には画面で扱う項目だけを含め、旧データのAPIキーを引き継がない。
-  function clientForStorage(client){
-    const { id, name, director, spaceUrl, projectId, monthlyHours, carryOverHours,
-      extraHours, from, to, synced, data, history } = client;
-    return { id, name, director, spaceUrl, projectId, monthlyHours, carryOverHours,
-      extraHours, from, to, synced, data, history: history || [] };
+    return client.data || { completed: [], inProgress: [], notStarted: [] };
   }
 
   // APIの認証情報はWorkerだけが扱う。
-  async function requestApi(path){
-    const res = await fetch(path, { credentials: 'same-origin' });
+  async function requestApi(path, method = 'GET', data){
+    const res = await fetch(path, { credentials: 'same-origin', method, ...(data ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {}) });
     let body;
     try{
       body = await res.json();
@@ -115,14 +45,6 @@
     }
     if(!res.ok) throw new Error(body.error || '取得に失敗しました。');
     return body;
-  }
-
-  async function fetchFromBacklog(client, from, to){
-    if(!backlogSettings || client.spaceUrl.replace(/\/$/, '') !== backlogSettings.spaceUrl){
-      throw new Error('登録されている接続先を確認し、クライアントを編集してください。');
-    }
-    const params = new URLSearchParams({ projectId: client.projectId, from, to });
-    return requestApi('/api/backlog/issues?' + params);
   }
 
   // 取得した課題名や登録内容をHTMLとして実行させない。
@@ -197,7 +119,7 @@
     const list = getFilteredClients();
     if(clients.length === 0){
       grid.innerHTML = ''; empty.style.display = 'block';
-      empty.textContent = 'クライアントがまだ登録されていません。「＋ クライアント追加」から登録してください。';
+      empty.textContent = (isAdmin() ? 'クライアントがまだ登録されていません。「＋ クライアント追加」から登録してください。' : '登録済みのプロジェクトがありません。管理者に登録を依頼してください。');
       return;
     }
     if(list.length === 0){
@@ -223,7 +145,7 @@
           <div class="stub-meta"><span>想定工数 <b>${t.est}h</b></span><span>確定工数 <b>${t.act}h</b><span style="color:var(--ink-soft); font-weight:400;">(処理中含む)</span></span></div>
           <div class="stub-actions">
             <button class="ghost" data-detail="${escapeHtml(c.id)}">詳細を見る</button>
-            <button class="ghost" data-edit="${escapeHtml(c.id)}">編集</button>
+            ${isAdmin() ? `<button class="ghost" data-edit="${escapeHtml(c.id)}">編集</button>` : ''}
           </div>
         </div>
       `;
@@ -248,6 +170,7 @@
   }
 
   function openDetail(clientId){
+    selectedSnapshot = null;
     selectedClientId = clientId;
     document.getElementById('listPage').style.display = 'none';
     document.getElementById('detailPage').style.display = 'block';
@@ -268,25 +191,26 @@
     const section = document.getElementById('detailSection');
     const client = clients.find(c => c.id === selectedClientId);
     if(!client){ backToList(); return; }
-    const t = getClientTotals(client);
+    const displayClient = selectedSnapshot ? { ...client, ...selectedSnapshot, monthlyHours: selectedSnapshot.capacity, carryOverHours: 0, extraHours: 0 } : client;
+    const t = getClientTotals(displayClient);
     const cls = balClass(t.remaining, t.capacity || 1);
 
     section.innerHTML = `
       <div class="detail-head">
         <div>
-          <h2>${escapeHtml(client.name)} <button class="ghost" id="btnEditClient" style="font-size:11px; padding:3px 9px; margin-left:6px;">編集</button></h2>
+          <h2>${escapeHtml(client.name)} ${isAdmin() ? '<button class="ghost" id="btnEditClient">編集</button>' : ''}</h2>
           <div class="meta">${escapeHtml(client.spaceUrl)} ・ Project #${escapeHtml(client.projectId)} ・ 担当: ${escapeHtml(client.director || '未設定')}</div>
         </div>
         <div class="period-fields">
           <span>集計期間</span>
-          <input type="text" id="detailFrom" value="${escapeHtml(client.from)}">
+          <input type="text" id="detailFrom" value="${escapeHtml(displayClient.from)}">
           <span>〜</span>
-          <input type="text" id="detailTo" value="${escapeHtml(client.to)}">
+          <input type="text" id="detailTo" value="${escapeHtml(displayClient.to)}">
           <button class="primary" id="btnFetch">この期間で取得</button>
         </div>
       </div>
 
-      <div id="fetchStatus" style="font-size:12px; margin-bottom:14px;"></div>
+      <div id="fetchStatus" role="status" style="font-size:12px; margin-bottom:14px;">${selectedSnapshot ? '履歴を表示中（取得時の契約工数で集計）' : client.synced ? '保存済みの取得結果を表示中' : '未取得です。期間を指定して取得してください。'}</div>${selectedSnapshot ? '<button class="ghost" id="btnLatest">最新の保存結果に戻る</button>' : ''}
 
       <div class="summary-bar" style="margin-bottom:20px;">
         <div class="item">
@@ -319,7 +243,7 @@
       <div class="panel ${activeTab==='notStarted'?'active':''}" id="panel-notStarted">${renderTable(t.notStarted)}</div>
 
       <p class="status-note">
-        「この期間で取得」を押すと、指定した期間でBacklogから完了・対応中・未対応のタスクを取得します(認証情報の入力は不要です。未取得時はサンプルを表示します)。
+        「この期間で取得」を押すと、指定した期間でBacklogから完了・対応中・未対応のタスクを取得します(認証情報の入力は不要です。取得結果は利用者全員で共有されます)。
         期間は更新日(≒その状態になった日に近い)を基準に、3つのステータスすべてに適用されます。残工数からは「完了」と「対応中」の工数だけを差し引き、「未対応」はまだ着手前のため差し引きません。
       </p>
 
@@ -330,12 +254,11 @@
     section.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => { activeTab = btn.dataset.tab; renderDetail(); });
     });
-    document.getElementById('btnEditClient').addEventListener('click', () => openClientModal(client));
+    document.getElementById('btnEditClient')?.addEventListener('click', () => openClientModal(client));
     document.getElementById('btnFetch').addEventListener('click', async () => {
       const from = document.getElementById('detailFrom').value.trim();
       const to = document.getElementById('detailTo').value.trim();
-      client.from = from || client.from;
-      client.to = to || client.to;
+
 
       const statusEl = document.getElementById('fetchStatus');
       const btn = document.getElementById('btnFetch');
@@ -345,12 +268,11 @@
       statusEl.textContent = 'Backlogからタスクを取得中...';
 
       try{
-        const data = await fetchFromBacklog(client, client.from, client.to);
-        client.data = data;
-        client.synced = true;
-        saveToHistory(client, client.from, client.to, data);
-        saveClientsToServer();
+        const updated = await requestApi('/api/clients/' + client.id + '/fetch', 'POST', { from, to, revision: client.revision });
+        replaceClient(updated);
         renderClientGrid();
+        if(selectedClientId !== client.id) return;
+        selectedSnapshot = null;
         renderDetail();
         document.getElementById('fetchStatus').textContent = '実データを取得し、月次履歴に記録しました';
         document.getElementById('fetchStatus').style.color = 'var(--accent)';
@@ -361,32 +283,19 @@
       }
     });
 
+    document.getElementById('btnLatest')?.addEventListener('click', () => { selectedSnapshot = null; renderDetail(); });
     section.querySelectorAll('[data-load-history]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const entry = client.history.find(h => h.from === btn.dataset.loadHistory);
-        if(!entry) return;
-        client.data = entry.data;
-        client.from = entry.from;
-        client.to = entry.to;
-        renderClientGrid();
-        renderDetail();
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const snapshot = await requestApi('/api/clients/' + client.id + '/history/' + btn.dataset.loadHistory);
+          if(selectedClientId !== client.id) return;
+          selectedSnapshot = snapshot;
+          renderDetail();
+        } catch(err) { showSyncBanner(err.message, true); }
+        finally { btn.disabled = false; }
       });
     });
-  }
-
-  // ---------------- 月次履歴 ----------------
-  function saveToHistory(client, from, to, data){
-    const t1 = summarizeIssues(data.completed);
-    const t2 = summarizeIssues(data.inProgress);
-    const est = Math.round((t1.totalEst + t2.totalEst) * 100) / 100;
-    const act = Math.round((t1.totalAct + t2.totalAct) * 100) / 100;
-    const capacity = Math.round((client.monthlyHours + client.carryOverHours + client.extraHours) * 100) / 100;
-    const remaining = Math.round((capacity - est - act) * 100) / 100;
-    const entry = { from, to, fetchedAt: new Date().toISOString(), est, act, capacity, remaining, data };
-
-    const idx = client.history.findIndex(h => h.from === from && h.to === to);
-    if(idx >= 0) client.history[idx] = entry; else client.history.push(entry);
-    client.history.sort((a, b) => (a.from < b.from ? 1 : -1)); // 新しい期間が上に来るように
   }
 
   function renderHistoryTable(client){
@@ -399,7 +308,7 @@
         <td data-label="想定工数" class="num">${h.est}</td>
         <td data-label="確定工数" class="num">${h.act}</td>
         <td data-label="残工数" class="num">${h.remaining}</td>
-        <td data-label="操作"><button class="ghost" style="font-size:11px; padding:3px 9px;" data-load-history="${escapeHtml(h.from)}">この期間を表示</button></td>
+        <td data-label="操作"><button class="ghost" style="font-size:11px; padding:3px 9px;" data-load-history="${escapeHtml(h.id)}">この期間を表示</button></td>
       </tr>
     `).join('');
     return `
@@ -445,8 +354,11 @@
 
   const overlay = document.getElementById('addClientOverlay');
   let editingClientId = null;
+  let editingRevision = null;
 
   function openClientModal(client){
+    if(!isAdmin() || document.getElementById('btnSaveClient').disabled) return;
+    editingRevision = client?.revision;
     editingClientId = client ? client.id : null;
     document.getElementById('clientModalTitle').textContent = client ? 'クライアントを編集' : 'クライアントを追加';
     document.getElementById('btnSaveClient').textContent = client ? '更新する' : '登録する';
@@ -455,7 +367,7 @@
     document.getElementById('inputName').value = client ? client.name : '';
     document.getElementById('inputDirector').value = client ? (client.director || '') : '';
     document.getElementById('inputSpaceUrl').value = backlogSettings?.spaceUrl || '';
-    document.getElementById('connectionNote').textContent = '取得可能なプロジェクト: ' + (backlogSettings?.projects.join(', ') || '未設定');
+    document.getElementById('connectionNote').textContent = '専用ユーザーがアクセスできるプロジェクトを登録できます。プロジェクトを変更すると取得結果と履歴は削除されます。';
     document.getElementById('inputProjectId').value = client ? client.projectId : '';
     document.getElementById('inputMonthly').value = client ? client.monthlyHours : '';
     document.getElementById('inputCarry').value = client ? client.carryOverHours : '';
@@ -468,78 +380,55 @@
   document.getElementById('btnCancelAdd').addEventListener('click', () => overlay.classList.remove('active'));
   overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.classList.remove('active'); });
 
-  document.getElementById('btnSaveClient').addEventListener('click', () => {
-    const name = document.getElementById('inputName').value.trim();
-    const director = document.getElementById('inputDirector').value.trim();
-    const spaceUrl = document.getElementById('inputSpaceUrl').value.trim();
-    const projectId = document.getElementById('inputProjectId').value.trim();
-    if(!name || !spaceUrl || !projectId){
-      alert('クライアント名・スペースURL・プロジェクトIDは必須です');
-      return;
-    }
-    if(!backlogSettings || spaceUrl !== backlogSettings.spaceUrl || !backlogSettings.projects.includes(projectId)){
-      alert('管理者が登録したプロジェクトIDまたはキーを入力してください');
-      return;
-    }
-    const monthlyHours = parseFloat(document.getElementById('inputMonthly').value) || 0;
-    const carryOverHours = parseFloat(document.getElementById('inputCarry').value) || 0;
-    const extraHours = parseFloat(document.getElementById('inputExtra').value) || 0;
-
-    if(editingClientId){
-      const c = clients.find(cl => cl.id === editingClientId);
-      const credentialsChanged = c.spaceUrl !== spaceUrl || c.projectId !== projectId;
-      Object.assign(c, { name, director, spaceUrl, projectId, monthlyHours, carryOverHours, extraHours });
-      if(credentialsChanged){
-        // 接続先が変わった場合は取得済みデータを無効化し、再取得を促す
-        c.data = null;
-        c.synced = false;
-      }
-      saveClientsToServer();
+  async function saveRegistration(remove = false){
+    const save = document.getElementById('btnSaveClient');
+    const del = document.getElementById('btnDeleteClient');
+    if(save.disabled) return;
+    if(remove && (!editingClientId || !confirm('この登録と取得結果・履歴を全利用者の共有データから削除しますか？'))) return;
+    const payload = remove ? {} : {
+      name: document.getElementById('inputName').value.trim(),
+      director: document.getElementById('inputDirector').value.trim(),
+      projectId: document.getElementById('inputProjectId').value.trim(),
+      monthlyHours: Number(document.getElementById('inputMonthly').value.trim()),
+      carryOverHours: Number(document.getElementById('inputCarry').value.trim()),
+      extraHours: Number(document.getElementById('inputExtra').value.trim()),
+    };
+    if(editingClientId) payload.revision = editingRevision;
+    const targetId = editingClientId;
+    save.disabled = del.disabled = true;
+    try {
+      const result = await requestApi('/api/clients' + (targetId ? '/' + targetId : ''), remove ? 'DELETE' : targetId ? 'PUT' : 'POST', payload);
+      if(remove) clients = clients.filter(c => c.id !== targetId); else replaceClient(result);
+      selectedSnapshot = null;
       overlay.classList.remove('active');
       renderClientGrid();
-      if(selectedClientId === c.id) renderDetail();
-    } else {
-      const id = 'c' + Date.now();
-      clients.push({
-        id, name, director, spaceUrl, projectId,
-        monthlyHours, carryOverHours, extraHours,
-        from: '2026-08-01', to: '2026-08-30', synced: false, data: null, history: [],
-      });
-      saveClientsToServer();
-      overlay.classList.remove('active');
-      renderClientGrid();
-      openDetail(id);
-    }
-  });
+      if(remove) backToList(); else openDetail(result.id);
+    } catch(err) { alert(err.message); }
+    finally { save.disabled = del.disabled = false; }
+  }
+  document.getElementById('btnSaveClient').addEventListener('click', () => saveRegistration());
+  document.getElementById('btnDeleteClient').addEventListener('click', () => saveRegistration(true));
 
-  document.getElementById('btnDeleteClient').addEventListener('click', () => {
-    if(!editingClientId) return;
-    if(!confirm('このクライアントを削除しますか？')) return;
-    clients = clients.filter(c => c.id !== editingClientId);
-    saveClientsToServer();
-    if(selectedClientId === editingClientId){
-      overlay.classList.remove('active');
-      backToList();
-      return;
-    }
-    overlay.classList.remove('active');
-    renderClientGrid();
-  });
-
-  // ---------------- 初期描画 ----------------
-  (async () => {
-    showSyncBanner('クライアント一覧を読み込み中...', false);
-    await loadClientsFromServer();
-    const banner = document.getElementById('syncBanner');
-    if(banner?.textContent === 'クライアント一覧を読み込み中...') banner.remove();
-    if(!CLIENTS_API_URL){
-      showSyncBanner('共有ストレージが未設定です。この画面を閉じると登録内容は失われます(設定方法は管理者に確認してください)。', false);
-    }
-    try{
+  async function refresh(){
+    const button = document.getElementById('btnRefresh');
+    button.disabled = true;
+    try {
       backlogSettings = await requestApi('/api/config');
-      document.getElementById('btnAddClient').disabled = false;
-    }catch(err){
-      showSyncBanner(err.message, true);
-    }
-    renderClientGrid();
+      await loadClientsFromServer();
+      document.getElementById('btnAddClient').hidden = !isAdmin();
+      document.getElementById('btnAddClient').disabled = !isAdmin();
+      document.getElementById('userIdentity').textContent = backlogSettings.user.email + (isAdmin() ? '（管理者）' : '（閲覧・取得）');
+      overlay.classList.remove('active');
+      selectedSnapshot = null;
+      renderClientGrid();
+      if(selectedClientId) renderDetail();
+      document.getElementById('syncBanner')?.remove();
+    } catch(err) { showSyncBanner(err.message, true); }
+    finally { button.disabled = false; }
+  }
+  document.getElementById('btnRefresh').addEventListener('click', refresh);
+  // 初期化時は設定と共有データを読み込み、権限が確認できるまで登録を許可しない。
+  (async () => {
+    showSyncBanner('共有データを読み込み中...', false);
+    await refresh();
   })();

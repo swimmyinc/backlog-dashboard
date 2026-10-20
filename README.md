@@ -1,128 +1,117 @@
 # 保守工数ダッシュボード
 
-Backlogの課題を取得し、クライアント別の保守工数を集計する社内向けツールです。
-HTML・CSS・JavaScriptの画面とCloudflare Workerを同じオリジンで配信します。
+Backlogの課題をクライアント別に集計する、招待制の社内ツールです。
+HTML・CSS・JavaScriptとCloudflare Workerを同一オリジンで配信し、D1に登録情報・取得結果・履歴を共有保存します。
 
-```text
-ブラウザ → Workerの取得API → Backlog API
-                 ↑
-     ローカル: .env / 本番: Worker Secret
-```
+## 利用者と権限
 
-APIキーを画面で入力・保存する機能はありません。Workerだけがキーを読み、
-`Backlog-API-Key` ヘッダーに付けてBacklogへ送ります。
-1スペース・1キーで、設定した複数のプロジェクトを扱います。
+- 利用者の許可メールアドレスはCloudflare Accessの管理画面で登録します。アプリ内の招待・ユーザー管理はありません。
+- `ADMIN_EMAILS` に登録されたメールの管理者だけが、クライアント・許可プロジェクト・契約工数を登録、編集、削除できます。
+- 一般利用者は、登録済みの全プロジェクトの閲覧、Backlog取得、履歴閲覧ができます。
+- WorkerはAccess JWTの署名・発行元・対象アプリ・有効期限を検証し、そのJWTのメールで管理者を判定します。メールの単独ヘッダーでは権限を判定しません。
+- Backlog APIキーは専用ユーザーのもの1つを全員で利用します。個人ごとのBacklog権限は引き継ぎません。
 
 ## ローカル起動
 
-Node.js 22以上を使用します。
+Node.js 22以上で実行します。
 
 ```sh
 npm ci
 ```
 
-ルートの `.env` に次の値を設定してください。未作成なら `.env.example` をコピーします。
-実キーをREADME・ソースコード・チャットへ貼り付ける必要はありません。
+`.env` がなければ `.env.example` をコピーし、値を設定してください。
 
 ```dotenv
-BACKLOG_API_KEY=ここに実キーを設定
+BACKLOG_API_KEY=専用ユーザーのAPIキー
 BACKLOG_SPACE_URL=https://your-space.backlog.com
-BACKLOG_ALLOWED_PROJECTS=PROJECT_A,PROJECT_B,123456
+ADMIN_EMAILS=admin@example.test
+LOCAL_USER_EMAIL=admin@example.test
 ```
 
-- `BACKLOG_SPACE_URL` は接続先のHTTPS URLです。パス・クエリ・認証情報は付けません。
-- `BACKLOG_ALLOWED_PROJECTS` は許可するIDまたはプロジェクトキーのカンマ区切りです。
-  画面にも同じ表記で入力します。例えば `PROJECT_A` を登録した場合、数値IDは別途登録しない限り受け付けません。
-- `.env` はGit管理対象外です。`.dev.vars` が存在すると `.env` より優先されるため、併用しません。
+- 接続先は1スペースです。HTTPSのオリジンだけを指定します。
+- `ADMIN_EMAILS` はカンマ区切りで複数指定できます。空なら管理操作を許可しません。
+- `LOCAL_USER_EMAIL` はローカルで再現する利用者です。管理者一覧にないメールを指定すると一般利用者になります。
+- `.env` はGit・公開ファイルから除外します。`.dev.vars` は `.env` より優先されるため併用しないでください。
+- 旧 `BACKLOG_ALLOWED_PROJECTS` は不要です。許可するプロジェクトは管理者が画面から登録します。
 
 ```sh
 npm run dev
 ```
 
-[http://127.0.0.1:8787](http://127.0.0.1:8787) を開きます。
-開発コマンドは `LOCAL_DEV:true` を起動時だけ渡し、HTTPのループバックURLに限ってAccess認証を省略します。
-本番設定に `LOCAL_DEV` を登録しないでください。公開URLではこのフラグがあっても認証を省略しません。
-環境変数を変更したら開発サーバーを再起動してください。
+ローカルD1にマイグレーションを適用してから起動します。
+[http://127.0.0.1:8787](http://127.0.0.1:8787) を開き、クライアントとプロジェクトキーまたは数値IDを登録してください。
+登録時にBacklog APIでアクセス権を確認し、数値IDに統一します。同じプロジェクトの重複登録はできません。
+実キーがない場合は画面の表示まで確認できますが、プロジェクト登録・取得は失敗します。
 
-画面でクライアントと許可済みプロジェクトを登録し、「この期間で取得」を押します。
-接続先はサーバー設定から表示され、画面では変更できません。
-APIキー未設定や権限不足の場合は取得エラーになり、管理者による設定確認が必要です。
-キーが未設定でも、接続先と許可プロジェクトが設定済みなら画面の登録・サンプル表示は確認できます。
+開発コマンドは `LOCAL_DEV:true` を渡します。HTTPのループバックホストに限ってAccess認証を省略します。
+`LOCAL_DEV` と `LOCAL_USER_EMAIL` は本番に登録しないでください。環境変数変更後は再起動します。
+ローカルデータは `.wrangler/` に保存され、本番D1とは共有されません。
 
-## 本番設定とデプロイ
+## 本番の準備
 
-本番ではCloudflare Accessを必須にしています。設定不足や認証失敗時は、画面・取得APIともに拒否します。
-Wranglerからのデプロイには対象Cloudflareアカウントへの認証が必要です。
+以下は管理者による初回設定です。このコード変更だけでは本番環境は作成されません。
 
-1. `wrangler.jsonc` のWorker名を確認し、対象アカウントで `npx wrangler login` を実行します。
-2. `npm run deploy` でWorkerを作成します。この時点ではAccess未設定のため画面は503になります。
-3. Cloudflare Zero Trustで、このWorkerの公開ホスト全体を保護するAccessアプリを作成します。
-   社内の利用者だけを許可するポリシーを設定してください。`/api/*` を保護対象から除外しないでください。
-   `workers.dev` を使う場合はWorker設定のアクセス制御からAccessを有効にします。
-4. Workerの「Settings → Variables and Secrets」で以下を登録し、変更を反映します。
+1. 対象Cloudflareアカウントで `npx wrangler login` を実行します。
+2. `npx wrangler d1 create backlog-dashboard` で本番D1を作成します。
+3. `wrangler.jsonc` の `d1_databases[0].database_id` のゼロの仮IDを、返された実IDに置き換えます。バインド名 `DB` は維持します。
+4. `npx wrangler d1 migrations apply backlog-dashboard --remote` で本番スキーマを作成します。
+5. `npm run deploy` でWorkerを作成します。この段階ではAccess設定不足のため画面は503で閉じます。
+6. Cloudflare Zero Trustで公開ホスト全体を保護するAccessアプリを作成します。許可ポリシーの「Emails」に利用者を個別登録し、必要ならOne-time PINを有効にします。`/api/*` も保護対象に含めます。`workers.dev` を利用する場合はWorkerのアクセス制御からAccessを有効にしてください。
+7. Workerの「Settings → Variables and Secrets」に次の値を登録して反映します。
 
-| 設定名 | 種別 | 値 |
+| 設定名 | 種別 | 内容 |
 | --- | --- | --- |
-| `BACKLOG_API_KEY` | Secret | Backlogで発行したAPIキー |
+| `BACKLOG_API_KEY` | Secret | 専用BacklogユーザーのAPIキー1つ |
 | `BACKLOG_SPACE_URL` | テキスト | `https://your-space.backlog.com` |
-| `BACKLOG_ALLOWED_PROJECTS` | テキスト | `PROJECT_A,PROJECT_B` |
+| `ADMIN_EMAILS` | テキスト | 管理者メールのカンマ区切り。Accessでも許可が必要 |
 | `ACCESS_TEAM_DOMAIN` | テキスト | `https://your-team.cloudflareaccess.com` |
-| `ACCESS_AUD` | テキスト | 作成したAccessアプリのApplication Audience (AUD) Tag |
+| `ACCESS_AUD` | テキスト | AccessアプリのApplication Audience (AUD) Tag |
 
-5. 公開URLへAccess経由でログインし、許可したプロジェクトの取得を確認します。
-   ログアウト状態や不正なJWTで取得できないことも確認してください。
+8. 管理者でログインし、画面の「クライアント追加」から許可プロジェクトと契約工数を登録します。
+9. 一般利用者での閲覧・取得、管理操作の拒否、許可していないメールのログイン拒否を確認します。
 
-キーはCLIからも登録・更新できます。値は対話プロンプトで入力します。
+APIキーはWorkerだけが読み、`Backlog-API-Key` ヘッダーでBacklogへ送ります。ブラウザへ渡しません。
+CLIで登録する場合は `npx wrangler secret put BACKLOG_API_KEY` の対話入力を利用してください。
+`.env` は本番へ送信しません。`keep_vars: true` により管理画面で登録した通常変数を後続デプロイでも保持します。
+Secretも通常のコード更新のたびに再登録する必要はありません。
 
-```sh
-npx wrangler secret put BACKLOG_API_KEY
-```
+## 共有保存と集計
 
-`.env` は本番へアップロードしません。Wrangler設定の `keep_vars: true` により、
-ダッシュボードで登録した通常変数も後続デプロイ時に保持します。
-Secretは通常のコード更新で毎回登録し直す必要はありません。
-キーを交換するときだけ新しい値でSecretを更新してください。
-
-WorkerはAccessのJWTについて署名・発行元・対象アプリ・有効期限を検証します。
-同じAccessアプリの利用者は、ここに設定した許可プロジェクトを共通で閲覧できます。
-利用者ごとのBacklog権限を引き継ぐOAuth構成ではありません。
+- 契約・繰越・追加工数、プロジェクト登録、最新の取得結果、期間別履歴をD1に保存します。
+- 他の利用者の変更は「一覧を更新」で読み込みます。自動ポーリングはありません。
+- 更新番号が古い編集・削除・取得は409で拒否します。「一覧を更新」してから再操作してください。取得中に編集された場合も結果を上書きしません。
+- 取得結果と履歴は同一トランザクションで保存します。同じ開始日・終了日の再取得は、その期間の履歴を更新します。
+- 履歴表示は共有の最新結果を変更しません。履歴の残工数は取得時点の契約工数を使います。
+- プロジェクトや接続スペースを変更すると、旧プロジェクトの取得結果・履歴を削除します。クライアント削除時も履歴を削除します。
+- 更新日で期間を絞り、「完了」「処理中」「未対応」を100件ずつ取得し、種別に「発注」を含む課題を除外します。
+- 残工数は「契約＋繰越＋追加−完了/処理中の想定−完了/処理中の実績」です。
+- 未取得時は空表示です。新規登録の初期期間は当月1日〜当日（UTC基準）です。
+- Backlog通信は30秒、100ページまでです。保存JSONが1MBを超える場合も期間の短縮を求めます。途中の結果を成功として保存しません。
+- 旧画面のメモリ上の登録や外部ストレージからの自動移行はありません。必要なプロジェクトを新規登録してください。
 
 ## コマンドと構成
 
 | コマンド | 内容 |
 | --- | --- |
-| `npm run dev` | `.env` を使うローカル開発サーバー |
+| `npm run dev` | ローカルD1の準備と開発サーバー起動 |
+| `npm run db:migrate:local` | ローカルマイグレーションだけ適用 |
 | `npm run build` | 公開用3ファイルだけを `dist/` にコピー |
-| `npm run check` | 構文と自動テストを検証 |
-| `npm run deploy:check` | Workerと静的ファイルのデプロイをドライラン |
+| `npm run check` | 構文、認証、API、画面イベント、ローカルD1のテスト |
+| `npm run deploy:check` | デプロイのドライラン |
 | `npm run deploy` | 本番へデプロイ |
 
-- `index.html`・`style.css`・`script.js`: 画面と表示・集計処理。
-- `worker.js`: 設定取得、Access認証、Backlog取得。任意URLや汎用APIの転送は受け付けません。
-- `scripts/build.mjs`: 公開対象を限定するビルド。`.env`・Worker・設定ファイルを混入させません。
-- `tests/worker.test.js`: 実キー・外部通信を使わない認証・取得・秘密情報保護の検証。
+- `index.html` / `style.css` / `script.js`: 画面、権限表示、API操作。
+- `worker.js`: Access認証、管理権限、入力検証、Backlog取得。
+- `store.js` / `migrations/`: D1保存、更新競合検出、履歴。
+- `tests/`: 実キー・本番通信を使わない検証。D1はMiniflareのローカル実装で検証します。画面イベントのテストはブラウザ描画確認の代替ではありません。
 
-開発時もHTMLを直接開く代わりに `npm run dev` を使います。
-`dist/` は自動生成物です。編集はルートの3ファイルに対して行ってください。
+`dist/` は生成物です。編集はルートのファイルで行ってください。
 
-## 維持している集計仕様と制限
+## 公式仕様
 
-- 更新日で期間を絞り込み、「完了」「処理中」「未対応」の課題を100件ずつ取得します。
-- 課題種別に「発注」を含むものは除外します。
-- 残工数は「契約＋繰越＋追加−完了/処理中の想定−完了/処理中の実績」です。
-- 取得前は既存のサンプル課題を表示します。新規クライアントの初期期間も既存仕様のままです。
-- 取得成功時に履歴を保存します。処理時間は30秒、ページ数は100ページに制限し、
-  上限に達した場合は部分的な集計結果を成功として表示しません。
-- クライアント共有ストレージは今回新設していません。`CLIENTS_API_URL` が未設定のため、
-  登録内容・取得結果・履歴は再読み込みで失われます。
-- 既存の共有ストレージを接続する場合、旧データのトップレベルの `apiKey` は読み込み時に除外します。
-  ただし保存先に残った古いキーをサーバー側から消す処理ではありません。既存データの削除と
-  共有ストレージ自体のアクセス制御は管理者側で行ってください。
-
-## 参照した公式仕様
-
-- [Backlogの認証と認可](https://developer.nulab.com/ja/docs/backlog/auth/)
-- [Workerの環境変数とローカルの.env](https://developers.cloudflare.com/workers/configuration/environment-variables/)
+- [Backlogの認証](https://developer.nulab.com/ja/docs/backlog/auth/)
+- [Workerの環境変数](https://developers.cloudflare.com/workers/configuration/environment-variables/)
 - [WorkerのSecret](https://developers.cloudflare.com/workers/configuration/secrets/)
 - [Access JWTの検証](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
-- [静的ファイルの配信設定](https://developers.cloudflare.com/workers/static-assets/binding/)
+- [D1バッチとトランザクション](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+- [D1マイグレーション](https://developers.cloudflare.com/d1/reference/migrations/)

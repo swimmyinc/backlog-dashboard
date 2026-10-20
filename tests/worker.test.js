@@ -1,4 +1,6 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { createStore } from '../store.js';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
@@ -10,10 +12,28 @@ const localEnv = {
   LOCAL_DEV: 'true',
   BACKLOG_API_KEY: 'test-only-secret-value',
   BACKLOG_SPACE_URL: 'https://example.backlog.com',
-  BACKLOG_ALLOWED_PROJECTS: 'TEST, 123',
+  LOCAL_USER_EMAIL: 'admin@example.test', ADMIN_EMAILS: 'admin@example.test',
 };
-const query = '/api/backlog/issues?projectId=TEST&from=2026-08-01&to=2026-08-31';
-const request = (path = query, init) => new Request('http://127.0.0.1:8787' + path, init);
+let mf;
+let client;
+let query;
+const settings = { name: '確認用', director: '', projectId: '123', spaceUrl: localEnv.BACKLOG_SPACE_URL, monthlyHours: 100, carryOverHours: 0, extraHours: 0, from: '2026-08-01', to: '2026-08-31', synced: false, data: null };
+before(async () => {
+  mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script: 'export default { fetch() { return new Response("ok"); } }', d1Databases: ['DB'] }] }));
+  localEnv.DB = await mf.getD1Database('DB');
+  productionEnv.DB = localEnv.DB;
+  const sql = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
+  await localEnv.DB.batch(sql.split(';').filter(s => s.trim()).map(s => localEnv.DB.prepare(s)));
+  client = await createStore(localEnv.DB).add(settings);
+  query = '/api/clients/' + client.id + '/fetch';
+});
+after(async () => { await mf?.dispose(); });
+const payloadRequest = (path, method, body, headers = {}) => new Request('http://127.0.0.1:8787' + path, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+const request = (path = query, init) => path === query && !init?.method ? payloadRequest(path, 'POST', { revision: client.revision, from: '2026-08-01', to: '2026-08-31' }, init?.headers) : new Request('http://127.0.0.1:8787' + path, init);
+async function fetchClient(worker, env = localEnv) {
+  client = await createStore(localEnv.DB).get(client.id);
+  return worker.fetch(request(), env);
+}
 const productionEnv = {
   ...localEnv, LOCAL_DEV: undefined,
   ACCESS_TEAM_DOMAIN: 'https://team.cloudflareaccess.com', ACCESS_AUD: 'dashboard-audience',
@@ -35,6 +55,9 @@ function fixtureWorker(pages = [[issue()]], options = {}) {
     ...options,
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
+      if (url.pathname === '/api/v2/projects/456') return Response.json({ id: 456 });
+      if (url.pathname === '/api/v2/projects/456/statuses') return Response.json(statuses);
+      if (url.pathname === '/api/v2/projects/456/issueTypes') return Response.json(types);
       if (url.pathname === '/api/v2/projects/TEST' || url.pathname === '/api/v2/projects/123') return Response.json({ id: 123 });
       if (url.pathname === '/api/v2/projects/123/statuses') return Response.json(statuses);
       if (url.pathname === '/api/v2/projects/123/issueTypes') return Response.json(types);
@@ -50,9 +73,9 @@ test('固定接続先へヘッダー認証し、分類・期間・発注除外�
     issue('完了'), issue('処理中'), issue('未対応'), issue('確認待ち'),
     issue('完了', { issueType: types[1] }),
   ]]);
-  const response = await worker.fetch(request(), localEnv);
+  const response = await fetchClient(worker);
   assert.equal(response.status, 200);
-  const body = await response.json();
+  const body = (await response.json()).data;
   for (const group of ['completed', 'inProgress', 'notStarted']) assert.equal(body[group].length, 1);
   assert.deepEqual(body.completed[0], {
     issueKey: 'TEST-1', summary: '課題の表示確認', status: '完了', type: '保守', est: 4, act: 2,
@@ -77,46 +100,42 @@ test('固定接続先へヘッダー認証し、分類・期間・発注除外�
 
 test('課題を100件ずつページングし、工数未設定は0にする', async () => {
   const { worker, calls } = fixtureWorker([Array.from({ length: 100 }, () => issue()), [issue('未対応', { estimatedHours: null, actualHours: null })]]);
-  const response = await worker.fetch(request(), localEnv);
-  const body = await response.json();
+  const response = await fetchClient(worker);
+  const body = (await response.json()).data;
   assert.equal(body.completed.length, 100);
   assert.equal(body.notStarted[0].est, 0);
   assert.equal(body.notStarted[0].act, 0);
   assert.deepEqual(calls.filter(c => c.url.pathname.endsWith('/issues')).map(c => c.url.searchParams.get('offset')), ['0', '100']);
 });
 
-test('設定APIは接続先と許可プロジェクトのみ返す', async () => {
+test('設定APIは接続先と認証済みの利用者権限だけ返す', async () => {
   const { worker, calls } = fixtureWorker();
   const response = await worker.fetch(request('/api/config'), localEnv);
-  assert.deepEqual(await response.json(), { spaceUrl: localEnv.BACKLOG_SPACE_URL, projects: ['TEST', '123'] });
+  assert.deepEqual(await response.json(), { spaceUrl: localEnv.BACKLOG_SPACE_URL, user: { email: 'admin@example.test', isAdmin: true } });
   assert.equal(calls.length, 0);
 });
 
-test('不正なプロジェクト・日付・追加パラメーターはBacklogへ送信しない', async () => {
+test('不正な日付・追加項目・未登録プロジェクトはBacklogへ送信しない', async () => {
   const { worker, calls } = fixtureWorker();
-  const cases = [
-    [query.replace('TEST', 'OTHER'), 403],
-    [query.replace('TEST', '..%2Fusers'), 403],
-    [query.replace('2026-08-01', '2026-02-30'), 400],
-    [query.replace('2026-08-01', '2026-09-01'), 400],
-    [query.replace('2026-08-01', 'invalid'), 400],
-    [query + '&spaceUrl=https://attacker.example', 400],
-    [query + '&apiKey=override', 400],
-    [query + '&projectId=OTHER', 400],
-  ];
-  for (const [path, expected] of cases) assert.equal((await worker.fetch(request(path), localEnv)).status, expected, path);
+  client = await createStore(localEnv.DB).get(client.id);
+  for (const extra of [{ from: '2026-02-30' }, { from: '2026-09-01' }, { from: 'invalid' }, { spaceUrl: 'https://evil.test' }, { apiKey: 'override' }, { projectId: 'OTHER' }]) {
+    const res = await worker.fetch(payloadRequest(query, 'POST', { revision: client.revision, from: '2026-08-01', to: '2026-08-31', ...extra }), localEnv);
+    assert.equal(res.status, 400);
+  }
+  assert.equal((await worker.fetch(payloadRequest('/api/clients/unknown/fetch', 'POST', { revision: 1, from: '2026-08-01', to: '2026-08-31' }), localEnv)).status, 404);
+  assert.equal((await worker.fetch(request('/api/backlog/issues?projectId=OTHER'), localEnv)).status, 404);
   assert.equal(calls.length, 0);
 });
 
 test('設定不足とBacklog以外の接続先を拒否する', async () => {
   const { worker, calls } = fixtureWorker();
   const badConfigs = [
-    { BACKLOG_API_KEY: '' }, { BACKLOG_ALLOWED_PROJECTS: '' }, { BACKLOG_ALLOWED_PROJECTS: '*' },
+    { BACKLOG_API_KEY: '' },
     ...['http://example.backlog.com', 'https://example.backlog.com.evil.test',
       'https://example.backlog.com/path', 'https://user:pass@example.backlog.com',
       'https://example.backlog.com:8443', 'https://example.backlog.com?x=1', ''].map(BACKLOG_SPACE_URL => ({ BACKLOG_SPACE_URL })),
   ];
-  for (const config of badConfigs) assert.equal((await worker.fetch(request(), { ...localEnv, ...config })).status, 503);
+  for (const config of badConfigs) assert.equal((await fetchClient(worker, { ...localEnv, ...config })).status, 503);
   assert.equal(calls.length, 0);
 });
 
@@ -127,7 +146,7 @@ test('接続エラー・上流エラー・リダイレクト・レート制限�
       if (code === 'json') return new Response(localEnv.BACKLOG_API_KEY);
       return new Response(localEnv.BACKLOG_API_KEY, { status: code });
     } });
-    const response = await worker.fetch(request(), localEnv);
+    const response = await fetchClient(worker);
     assert.equal(response.status, code === 429 ? 429 : 502);
     assert.equal((await response.text()).includes(localEnv.BACKLOG_API_KEY), false);
   }
@@ -136,7 +155,7 @@ test('接続エラー・上流エラー・リダイレクト・レート制限�
 test('取得上限では不完全な集計を成功として返さない', async () => {
   const page = Array.from({ length: 100 }, () => issue());
   const { worker } = fixtureWorker(Array(100).fill(page));
-  const response = await worker.fetch(request(), localEnv);
+  const response = await fetchClient(worker);
   assert.equal(response.status, 422);
 });
 
@@ -161,11 +180,11 @@ test('Accessの署名・発行元・対象・有効期限を検証し、正常�
       return createLocalJWKSet({ keys: [publicJwk] });
     },
   });
-  async function token({ issuer = productionEnv.ACCESS_TEAM_DOMAIN, aud = productionEnv.ACCESS_AUD, expires = '5m', key = privateKey } = {}) {
-    return new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuedAt()
+  async function token({ issuer = productionEnv.ACCESS_TEAM_DOMAIN, aud = productionEnv.ACCESS_AUD, expires = '5m', key = privateKey, email = 'admin@example.test' } = {}) {
+    return new SignJWT({ email }).setProtectedHeader({ alg: 'RS256' }).setIssuedAt()
       .setSubject('test-user').setIssuer(issuer).setAudience(aud).setExpirationTime(expires).sign(key);
   }
-  const remote = jwt => new Request('https://dashboard.example.com' + query, { headers: { 'Cf-Access-Jwt-Assertion': jwt } });
+  const remote = jwt => new Request('https://dashboard.example.com/api/config', { headers: { 'Cf-Access-Jwt-Assertion': jwt } });
   for (const jwt of ['invalid', await token({ issuer: 'https://other.cloudflareaccess.com' }),
     await token({ aud: 'other-app' }), await token({ expires: '-1m' }), await token({ key: otherKey.privateKey })]) {
     assert.equal((await worker.fetch(remote(jwt), productionEnv)).status, 401);
@@ -173,13 +192,21 @@ test('Accessの署名・発行元・対象・有効期限を検証し、正常�
   assert.equal(calls.length, 0);
   assert.equal((await worker.fetch(remote(await token()), productionEnv)).status, 200);
   assert.equal(certsUrl, 'https://team.cloudflareaccess.com/cdn-cgi/access/certs');
+  assert.equal((await worker.fetch(remote(await token({ email: null })), productionEnv)).status, 401);
+  const memberRequest = remote(await token({ email: 'member@example.test' }));
+  memberRequest.headers.set('Cf-Access-Authenticated-User-Email', 'admin@example.test');
+  const member = await (await worker.fetch(memberRequest, productionEnv)).json();
+  assert.equal(member.user.isAdmin, false);
+  const admin = await (await worker.fetch(remote(await token()), productionEnv)).json();
+  assert.equal(admin.user.isAdmin, true);
+
 });
 
 test('他サイトからの呼び出しや更新操作は拒否する', async () => {
   const { worker, calls } = fixtureWorker();
   assert.equal((await worker.fetch(request(query, { headers: { Origin: 'https://other.example' } }), localEnv)).status, 403);
   assert.equal((await worker.fetch(request(query, { headers: { 'Sec-Fetch-Site': 'cross-site' } }), localEnv)).status, 403);
-  assert.equal((await worker.fetch(request(query, { method: 'POST' }), localEnv)).status, 405);
+  assert.equal((await worker.fetch(request(query, { method: 'PUT' }), localEnv)).status, 405);
   assert.equal(calls.length, 0);
 });
 
@@ -260,18 +287,18 @@ test('画面の登録からWorker取得・集計・履歴まで、キーを含�
   const requests = [];
   const { context, elements } = await loadFrontend(async (path, init) => {
     requests.push({ path, init });
-    return worker.fetch(request(path), localEnv);
+    return worker.fetch(request(path, init), localEnv);
   });
   assert.equal(elements.get('btnAddClient').disabled, false);
   elements.get('btnAddClient').events.click();
   elements.get('inputName').value = '<img src=x onerror=alert(1)>';
-  elements.get('inputProjectId').value = 'TEST';
+  elements.get('inputProjectId').value = '456';
   elements.get('inputMonthly').value = '100';
-  elements.get('btnSaveClient').events.click();
+  await elements.get('btnSaveClient').events.click();
   elements.get('detailFrom').value = '2026-08-01';
   elements.get('detailTo').value = '2026-08-31';
   await elements.get('btnFetch').events.click();
-  const state = JSON.parse(runInContext('JSON.stringify({ client: clients[0], totals: getClientTotals(clients[0]) })', context));
+  const state = JSON.parse(runInContext('JSON.stringify({ client: clients.find(c => c.projectId === "456"), totals: getClientTotals(clients.find(c => c.projectId === "456")) })', context));
   assert.equal(state.client.synced, true);
   assert.equal(state.client.history.length, 1);
   assert.equal(state.totals.est, 8);
@@ -279,28 +306,22 @@ test('画面の登録からWorker取得・集計・履歴まで、キーを含�
   assert.equal(state.totals.remaining, 88);
   assert.equal(state.totals.notStarted.count, 1);
   assert.equal(Object.hasOwn(state.client, 'apiKey'), false);
-  assert.equal(requests.length, 2);
-  const params = new URL(requests[1].path, 'http://localhost').searchParams;
-  assert.deepEqual([...params.keys()], ['projectId', 'from', 'to']);
+  assert.equal(requests.some(r => r.init.body?.includes('apiKey')), false);
   assert.equal(elements.get('detailSection').innerHTML.includes('<img src=x'), false);
   assert.ok(elements.get('detailSection').innerHTML.includes('&lt;img'));
   assert.match(elements.get('fetchStatus').textContent, /実データを取得/);
-  const stripped = runInContext('clientForStorage({ ...clients[0], apiKey: "old-secret" })', context);
-  assert.equal(Object.hasOwn(stripped, 'apiKey'), false);
+
 });
 
 test('キー未設定時は画面に取得失敗を表示し、履歴に成功として記録しない', async () => {
   const { worker } = fixtureWorker();
-  const { context, elements } = await loadFrontend(path => worker.fetch(request(path), { ...localEnv, BACKLOG_API_KEY: '' }));
-  elements.get('btnAddClient').events.click();
-  elements.get('inputName').value = '確認用';
-  elements.get('inputProjectId').value = 'TEST';
-  elements.get('btnSaveClient').events.click();
+  const { context, elements } = await loadFrontend((path, init) => worker.fetch(request(path, init), { ...localEnv, BACKLOG_API_KEY: '' }));
+  runInContext('openDetail(clients[0].id)', context);
+  const priorHistory = runInContext('clients[0].history.length', context);
   elements.get('detailFrom').value = '2026-08-01';
   elements.get('detailTo').value = '2026-08-31';
   await elements.get('btnFetch').events.click();
   assert.match(elements.get('fetchStatus').textContent, /接続設定が未完了/);
   assert.equal(elements.get('btnFetch').disabled, false);
-  assert.equal(runInContext('clients[0].synced', context), false);
-  assert.equal(runInContext('clients[0].history.length', context), 0);
+  assert.equal(runInContext('clients[0].history.length', context), priorHistory);
 });

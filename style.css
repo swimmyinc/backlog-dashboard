@@ -187,3 +187,7 @@
     td{border:none; padding:4px 10px;}
     td::before{content:attr(data-label); display:inline-block; width:80px; color:var(--ink-soft); font-size:11px;}
   }
+
+[hidden] { display: none !important; }
+.session-bar { display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
+button:disabled { opacity: .55; cursor: wait; }
