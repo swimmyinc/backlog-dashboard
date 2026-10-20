@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "backlog-dashboard",
+  "account_id": "71a50ff189ef4a97bce38f5100366fcb",
   "main": "worker.js",
   "compatibility_date": "2026-10-09",
   "keep_vars": true,
@@ -29,7 +30,7 @@
     {
       "binding": "DB",
       "database_name": "backlog-dashboard",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "0e15f9e1-0b9b-4518-9722-4521bc1320ae",
       "migrations_dir": "migrations"
     }
   ]
