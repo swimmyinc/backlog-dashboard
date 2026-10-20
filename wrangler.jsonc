@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "backlog-dashboard",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-09",
+  "keep_vars": true,
+  "workers_dev": true,
+  "preview_urls": false,
+  "send_metrics": false,
+  "build": {
+    "command": "npm run build",
+    "watch_dir": [
+      "index.html",
+      "style.css",
+      "script.js"
+    ]
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787,
+    "local_protocol": "http"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "backlog-dashboard",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

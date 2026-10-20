@@ -1,0 +1,193 @@
+  :root{
+    --bg:#EEF0EA;
+    --paper:#F7F8F3;
+    --ink:#1F2A22;
+    --ink-soft:#586256;
+    --line:#C8CDBE;
+    --accent:#2F6F62;
+    --accent-soft:#DCE9E3;
+    --amber:#B4802B;
+    --amber-soft:#F3E6CC;
+    --red:#A5382E;
+    --red-soft:#F2DCD8;
+    --shadow: 0 1px 0 rgba(31,42,34,0.06);
+    --radius: 3px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Noto Sans JP', sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.display{
+    font-family:'Zen Kaku Gothic New', sans-serif;
+    letter-spacing:0.02em;
+  }
+  .app{ max-width:1040px; margin:0 auto; padding:28px 20px 80px; }
+
+  header.top{
+    display:flex; align-items:baseline; justify-content:space-between;
+    border-bottom:2px solid var(--ink);
+    padding-bottom:14px; margin-bottom:22px; flex-wrap:wrap; gap:10px;
+  }
+  header.top .brand{ display:flex; align-items:baseline; gap:10px; }
+  header.top h1{ font-size:22px; font-weight:900; margin:0; }
+  header.top .sub{ font-size:12px; color:var(--ink-soft); }
+
+  button.primary{
+    font-family:'Zen Kaku Gothic New', sans-serif;
+    background:var(--ink); color:var(--paper); border:none;
+    padding:9px 16px; font-size:13px; font-weight:700;
+    border-radius:var(--radius); cursor:pointer;
+  }
+  button.primary:hover{background:var(--accent);}
+  button.ghost{
+    background:none; border:1px solid var(--line); padding:7px 12px;
+    font-size:12px; border-radius:var(--radius); cursor:pointer; color:var(--ink-soft);
+  }
+  button.ghost:hover{border-color:var(--ink-soft); color:var(--ink);}
+  button.link{
+    background:none;border:none;color:var(--accent);cursor:pointer;
+    font-size:12px; padding:2px 4px; text-decoration:underline;
+  }
+
+  select, input[type=text]{
+    font-family:'Noto Sans JP', sans-serif; font-size:13px;
+    border:1px solid var(--line); background:var(--paper);
+    padding:7px 10px; border-radius:var(--radius); color:var(--ink);
+  }
+  select:focus, input:focus, button:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+
+  .tag{
+    font-size:10px; padding:2px 7px; border-radius:20px;
+    background:var(--accent-soft); color:var(--accent); white-space:nowrap;
+  }
+  .tag.sample{ background:var(--amber-soft); color:var(--amber); }
+
+  .notice{
+    display:block;
+    padding:9px 14px;
+    border-radius:var(--radius);
+    border:1px solid var(--amber);
+    background:var(--amber-soft);
+    color:#7A5A1E;
+    font-size:12px;
+    margin-bottom:16px;
+  }
+
+  /* ---- 全体サマリー ---- */
+  .summary-bar{
+    display:flex; gap:32px; flex-wrap:wrap;
+    background:var(--paper); border:1px solid var(--line); border-radius:6px;
+    padding:16px 20px; margin-bottom:26px; font-size:12px; box-shadow:var(--shadow);
+  }
+  .summary-bar .item{ display:flex; flex-direction:column; gap:2px; min-width:140px; }
+  .summary-bar .item .label{ color:var(--ink-soft); font-size:11px; }
+  .summary-bar .item .val{ font-family:'Zen Kaku Gothic New', sans-serif; font-weight:900; font-size:28px; line-height:1.1; }
+  .summary-bar .item .val .unit{ font-size:12px; font-weight:500; color:var(--ink-soft); margin-left:2px; }
+  .val.bal-ok{color:var(--accent);} .val.bal-low{color:var(--amber);} .val.bal-zero{color:var(--red);}
+
+  .section-title{
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;
+  }
+  .section-title h2{ font-size:15px; margin:0; }
+
+  .toolbar{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:16px; gap:12px; flex-wrap:wrap;
+  }
+  .toolbar .filters{ display:flex; gap:8px; flex-wrap:wrap; }
+  .toolbar .filters input[type=text]{ min-width:200px; }
+
+  /* ---- クライアントカード(stub) ---- */
+  .client-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:14px; margin-bottom:36px; }
+  .stub{
+    background:var(--paper); border:1px solid var(--line); border-radius:6px;
+    padding:16px 16px 14px; position:relative; box-shadow:var(--shadow); cursor:pointer;
+    transition:border-color .15s ease;
+  }
+  .stub:hover{ border-color:var(--accent); }
+  .stub.selected{ border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .stub::before{
+    content:""; position:absolute; left:0; right:0; bottom:66px; height:0;
+    border-bottom:1px dashed var(--line);
+  }
+  .stub-head{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px; }
+  .stub-head .name{ font-family:'Zen Kaku Gothic New', sans-serif; font-weight:700; font-size:15px; }
+  .stub-note{ font-size:11px; color:var(--ink-soft); margin:4px 0 18px; min-height:14px; display:flex; justify-content:space-between; }
+  .stub-balance{ display:flex; align-items:baseline; gap:6px; padding-top:14px; }
+  .stub-balance .num{ font-family:'Zen Kaku Gothic New', sans-serif; font-weight:900; font-size:30px; line-height:1; }
+  .stub-balance .unit{ font-size:11px; color:var(--ink-soft); }
+  .stub-meta{ display:flex; justify-content:space-between; font-size:11px; color:var(--ink-soft); margin-top:8px; }
+  .stub-meta b{ color:var(--ink); font-weight:700; }
+  .stub-actions{ display:flex; gap:6px; margin-top:12px; }
+
+  /* ---- 詳細セクション ---- */
+  #detailSection{
+    background:var(--paper); border:1px solid var(--line); border-radius:6px;
+    padding:20px 22px; margin-bottom:30px;
+  }
+  .detail-head{
+    display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;
+    margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line);
+  }
+  .detail-head h2{ margin:0 0 4px; font-size:17px; }
+  .detail-head .meta{ font-size:11px; color:var(--ink-soft); }
+  .period-fields{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-soft); }
+  .period-fields input{ width:110px; }
+
+  nav.tabs{ display:flex; gap:2px; margin-bottom:16px; border-bottom:1px solid var(--line); }
+  nav.tabs button{
+    font-family:'Zen Kaku Gothic New', sans-serif; font-size:13.5px; font-weight:700;
+    background:none; border:none; padding:9px 14px; cursor:pointer; color:var(--ink-soft);
+    border-bottom:3px solid transparent; position:relative; top:1px;
+  }
+  nav.tabs button.active{ color:var(--ink); border-bottom-color:var(--accent); }
+  nav.tabs .count{ font-family:'Noto Sans JP', sans-serif; font-weight:400; font-size:11px; color:var(--ink-soft); margin-left:4px; }
+  .panel{display:none;} .panel.active{display:block;}
+
+  table{ width:100%; border-collapse:collapse; background:var(--paper); font-size:13px; }
+  th, td{ text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); }
+  th{ font-family:'Zen Kaku Gothic New', sans-serif; font-size:11px; color:var(--ink-soft); font-weight:700; border-bottom:2px solid var(--ink); }
+  th.num, td.num{ text-align:right; font-family:'Zen Kaku Gothic New', sans-serif; }
+  tfoot td{ font-weight:700; border-bottom:none; border-top:2px solid var(--ink); }
+  .issue-key{ color:var(--accent); font-weight:700; font-size:12.5px; }
+
+  .badge-status{ font-size:11px; padding:3px 9px; border-radius:20px; font-weight:700; white-space:nowrap; }
+  .st-未対応{background:#E5E7DF; color:var(--ink-soft);}
+  .st-処理中{background:var(--accent-soft); color:var(--accent);}
+  .st-完了{background:#D9EBD3; color:#3A7A2A;}
+
+  .empty{
+    padding:40px 20px; text-align:center; color:var(--ink-soft); font-size:13px;
+    border:1px dashed var(--line); border-radius:6px; background:var(--paper);
+  }
+
+  .status-note{ font-size:11px; color:var(--ink-soft); margin-top:16px; padding-top:12px; border-top:1px solid var(--line); }
+
+  /* ---- モーダル ---- */
+  .overlay{ display:none; position:fixed; inset:0; background:rgba(31,42,34,0.35); align-items:center; justify-content:center; z-index:50; padding:20px; }
+  .overlay.active{ display:flex; }
+  .modal{ background:var(--paper); border-radius:6px; width:100%; max-width:440px; padding:22px; box-shadow:0 10px 40px rgba(0,0,0,0.2); max-height:90vh; overflow-y:auto; }
+  .modal h3{ margin:0 0 16px; font-size:16px; }
+  .field{ margin-bottom:12px; }
+  .field label{ display:block; font-size:11px; color:var(--ink-soft); margin-bottom:4px; }
+  .field input{ width:100%; }
+  .field-row{ display:flex; gap:10px; }
+  .field-row .field{ flex:1; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+
+  @media (max-width:560px){
+    header.top{ flex-direction:column; align-items:flex-start; gap:4px; }
+    table, thead, tbody, th, td, tr { display:block; }
+    thead{display:none;}
+    tr{border-bottom:2px solid var(--line); padding:8px 0;}
+    td{border:none; padding:4px 10px;}
+    td::before{content:attr(data-label); display:inline-block; width:80px; color:var(--ink-soft); font-size:11px;}
+  }
+
+[hidden] { display: none !important; }
+.session-bar { display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
+button:disabled { opacity: .55; cursor: wait; }
