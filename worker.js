@@ -131,11 +131,15 @@ export function createWorker({ fetchImpl = fetch, jwksFactory = createRemoteJWKS
       try {
         response = await fetchImpl(target, {
           headers: { 'Backlog-API-Key': env.BACKLOG_API_KEY, Accept: 'application/json' },
-          redirect: 'error',
+          // Workersが対応するmanualで転送を止め、別の接続先へキーを送らない。
+          redirect: 'manual',
           signal,
         });
       } catch {
         throw new HttpError(502, 'Backlogとの通信に失敗しました。時間をおいて再試行してください。');
+      }
+      if (response.status >= 300 && response.status < 400) {
+        throw new HttpError(502, 'Backlogから転送応答が返されました。管理者に接続先の設定を確認してください。');
       }
       if (!response.ok) {
         if (response.status === 429) {

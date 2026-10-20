@@ -84,7 +84,7 @@ test('固定接続先へヘッダー認証し、分類・期間・発注除外�
     assert.equal(url.origin, localEnv.BACKLOG_SPACE_URL);
     assert.equal(url.searchParams.has('apiKey'), false);
     assert.equal(init.headers['Backlog-API-Key'], localEnv.BACKLOG_API_KEY);
-    assert.equal(init.redirect, 'error');
+    assert.equal(init.redirect, 'manual');
     assert.ok(init.signal instanceof AbortSignal);
     assert.equal(init.headers.Cookie, undefined);
   }
@@ -149,6 +149,60 @@ test('接続エラー・上流エラー・リダイレクト・レート制限�
     const response = await fetchClient(worker);
     assert.equal(response.status, code === 429 ? 429 : 502);
     assert.equal((await response.text()).includes(localEnv.BACKLOG_API_KEY), false);
+  }
+});
+
+test('実Workersランタイムで通信設定を受け付け、転送先へキーを送らない', async () => {
+  const runtime = new Miniflare(convertV4MiniflareOptions({
+    workers: [{
+      name: 'request-validation', modules: true, compatibilityDate: '2026-10-09',
+      script: `export default {
+        async fetch(request) {
+          const { url, init } = await request.json();
+          try {
+            const upstream = new Request(url, { ...init, signal: AbortSignal.timeout(30000) });
+            return Response.json({ redirect: upstream.redirect });
+          } catch {
+            return new Response("通信設定が非対応です", { status: 500 });
+          }
+        }
+      }`,
+    }],
+  }));
+  try {
+    for (const status of [301, 302, 303, 307, 308]) {
+      let calls = 0;
+      const worker = createWorker({
+        fetchImpl: async (url, init) => {
+          calls++;
+          assert.equal(url.origin, localEnv.BACKLOG_SPACE_URL);
+          // 実際の通信オプションをworkerdのRequestで検証し、Nodeだけでは通る不具合を検出する。
+          const { signal, ...options } = init;
+          const validation = await runtime.dispatchFetch('http://localhost', {
+            method: 'POST',
+            body: JSON.stringify({ url: String(url), init: options }),
+          });
+          assert.equal(validation.status, 200);
+          assert.equal((await validation.json()).redirect, 'manual');
+          return new Response(localEnv.BACKLOG_API_KEY, {
+            status,
+            headers: { Location: 'https://unexpected.example/secret-destination' },
+          });
+        },
+      });
+      const response = await worker.fetch(payloadRequest('/api/clients', 'POST', {
+        name: '転送拒否確認', director: '', projectId: 'REDIRECT',
+        monthlyHours: 0, carryOverHours: 0, extraHours: 0,
+      }), localEnv);
+      assert.equal(response.status, 502);
+      const body = await response.text();
+      assert.match(body, /転送応答/);
+      assert.equal(body.includes(localEnv.BACKLOG_API_KEY), false);
+      assert.equal(body.includes('unexpected.example'), false);
+      assert.equal(calls, 1);
+    }
+  } finally {
+    await runtime.dispose();
   }
 });
 
