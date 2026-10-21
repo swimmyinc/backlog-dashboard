@@ -191,6 +191,7 @@ export default function useDashboard() {
     clients, settings, selectedClient, selectedClientId, selectedMonth, filterText, setFilterText,
     filterDirector, setFilterDirector, periodMode, customRange, customResult, snapshot, modal,
     pending, historyPending, notice, operationStatus, isAdmin,
+    dismissNotice: () => setNotice(null),
     refresh, openDetail, backToList, changeMonth, changeMode, changeRange,
     mutate, fetchCustom, loadHistory, openModal, closeModal, saveClient,
   };

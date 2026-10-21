@@ -209,6 +209,9 @@
     background:var(--amber-soft)
   }
   .notice {
+    display:flex;
+    align-items:center;
+    gap:12px;
     background:var(--amber-soft);
     border-color:var(--amber);
     color:#7a5a1e;
@@ -219,6 +222,22 @@
     line-height:1.8;
     margin-bottom:20px
   }
+  .notice>span { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .notice-close {
+    display:grid;
+    place-items:center;
+    flex-shrink:0;
+    width:28px;
+    height:28px;
+    padding:0;
+    border:0;
+    border-radius:4px;
+    background:transparent;
+    color:inherit;
+    font-size:13px;
+    line-height:1;
+  }
+  .notice-close:hover { background:#0000000d; }
   .bal-ok {
     color:#2444aa
   }

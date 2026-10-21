@@ -360,3 +360,25 @@ test('前月の残工数の初期値をそのまま登録できる', async () =>
   await screen.findByText('月別工数を保存しました。');
   expect((await store.get(client.id)).months.find(item => item.month === '2026-09')).toMatchObject({ carryOverHours: 98, capacity: 123 });
 });
+
+
+test('成功・エラーの上部通知を閉じても保存データを維持し、次の通知を表示できる', async () => {
+  await openDetail();
+  await fetchMonth();
+  const before = await savedMonth();
+  await click('通知を閉じる');
+  expect(screen.queryByText('対象月の課題を取得しました。')).toBeNull();
+  expect(screen.queryByRole('button', { name: '通知を閉じる' })).toBeNull();
+  expect(await savedMonth()).toEqual(before);
+  env.BACKLOG_API_KEY = '';
+  await click('↻ Backlogから取り込み');
+  await screen.findByRole('alert');
+  const close = screen.getByRole('button', { name: '通知を閉じる' });
+  close.focus();
+  await userEvent.keyboard('{Enter}');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(await savedMonth()).toEqual(before);
+  env.BACKLOG_API_KEY = 'test-only-secret';
+  await fetchMonth();
+  expect(screen.getByRole('button', { name: '通知を閉じる' })).toBeTruthy();
+});
