@@ -4,7 +4,6 @@ import { createStore } from '../store.js';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { createContext, runInContext } from 'node:vm';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { createWorker } from '../worker.js';
 
@@ -22,14 +21,15 @@ before(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script: 'export default { fetch() { return new Response("ok"); } }', d1Databases: ['DB'] }] }));
   localEnv.DB = await mf.getD1Database('DB');
   productionEnv.DB = localEnv.DB;
-  const sql = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
+  const sql = (await Promise.all(['0001_initial.sql', '0002_monthly_hours.sql'].map(name => readFile(new URL('../migrations/' + name, import.meta.url), 'utf8')))).join('\n');
   await localEnv.DB.batch(sql.split(';').filter(s => s.trim()).map(s => localEnv.DB.prepare(s)));
   client = await createStore(localEnv.DB).add(settings);
-  query = '/api/clients/' + client.id + '/fetch';
+  client = await createStore(localEnv.DB).saveMonth(client.id, client.revision, '2026-08', { settings: { monthlyHours: 100, carryOverHours: 0 } }, 'admin@example.test');
+  query = '/api/clients/' + client.id + '/months/2026-08/fetch';
 });
 after(async () => { await mf?.dispose(); });
 const payloadRequest = (path, method, body, headers = {}) => new Request('http://127.0.0.1:8787' + path, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-const request = (path = query, init) => path === query && !init?.method ? payloadRequest(path, 'POST', { revision: client.revision, from: '2026-08-01', to: '2026-08-31' }, init?.headers) : new Request('http://127.0.0.1:8787' + path, init);
+const request = (path = query, init) => path === query && !init?.method ? payloadRequest(path, 'POST', { revision: client.revision }, init?.headers) : new Request('http://127.0.0.1:8787' + path, init);
 async function fetchClient(worker, env = localEnv) {
   client = await createStore(localEnv.DB).get(client.id);
   return worker.fetch(request(), env);
@@ -40,12 +40,12 @@ const productionEnv = {
 };
 const statuses = [
   { id: 1, name: '未対応' }, { id: 2, name: '処理中' },
-  { id: 3, name: '完了' }, { id: 4, name: '確認待ち' },
+  { id: 3, name: '完了' }, { id: 4, name: '確認待ち' }, { id: 5, name: '処理済み' },
 ];
 const types = [{ id: 10, name: '保守' }, { id: 11, name: '追加発注' }];
 const issue = (status = '完了', overrides = {}) => ({
   issueKey: 'TEST-1', summary: '課題の表示確認', status: { name: status },
-  issueType: types[0], estimatedHours: 4, actualHours: 2,
+  issueType: types[0], estimatedHours: 4, actualHours: 2, startDate: '2026-08-15T00:00:00Z',
   privateField: '画面に不要な情報', ...overrides,
 });
 
@@ -70,15 +70,17 @@ function fixtureWorker(pages = [[issue()]], options = {}) {
 
 test('固定接続先へヘッダー認証し、分類・期間・発注除外と必要項目だけを維持する', async () => {
   const { worker, calls } = fixtureWorker([[
-    issue('完了'), issue('処理中'), issue('未対応'), issue('確認待ち'),
+    issue('完了'), issue('処理中'), issue('処理済み'), issue('未対応'), issue('確認待ち'),
+    issue('完了', { startDate: null }), issue('完了', { startDate: '2026-07-31T00:00:00Z' }), issue('完了', { startDate: '2026-09-01T00:00:00Z' }),
     issue('完了', { issueType: types[1] }),
   ]]);
   const response = await fetchClient(worker);
   assert.equal(response.status, 200);
-  const body = (await response.json()).data;
-  for (const group of ['completed', 'inProgress', 'notStarted']) assert.equal(body[group].length, 1);
-  assert.deepEqual(body.completed[0], {
-    issueKey: 'TEST-1', summary: '課題の表示確認', status: '完了', type: '保守', est: 4, act: 2,
+  const body = (await response.json()).months.find(m => m.month === '2026-08').data;
+  assert.equal(body.confirmed.length, 3);
+  assert.equal(body.planned.length, 1);
+  assert.deepEqual(body.confirmed[0], {
+    issueKey: 'TEST-1', summary: '課題の表示確認', status: '完了', type: '保守', est: 4, startDate: '2026-08-15',
   });
   for (const { url, init } of calls) {
     assert.equal(url.origin, localEnv.BACKLOG_SPACE_URL);
@@ -89,22 +91,22 @@ test('固定接続先へヘッダー認証し、分類・期間・発注除外�
     assert.equal(init.headers.Cookie, undefined);
   }
   const params = calls.at(-1).url.searchParams;
-  assert.deepEqual(params.getAll('statusId[]'), ['1', '2', '3']);
+  assert.deepEqual(params.getAll('statusId[]'), ['1', '2', '3', '5']);
   assert.deepEqual(params.getAll('issueTypeId[]'), ['10']);
   assert.deepEqual(params.getAll('projectId[]'), ['123']);
-  assert.equal(params.get('updatedSince'), '2026-08-01');
-  assert.equal(params.get('updatedUntil'), '2026-08-31');
+  assert.equal(params.get('startDateSince'), '2026-08-01');
+  assert.equal(params.get('startDateUntil'), '2026-08-31');
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(JSON.stringify(body).includes(localEnv.BACKLOG_API_KEY), false);
 });
 
-test('課題を100件ずつページングし、工数未設定は0にする', async () => {
+test('課題を100件ずつページングし、工数未入力はnullで保持する', async () => {
   const { worker, calls } = fixtureWorker([Array.from({ length: 100 }, () => issue()), [issue('未対応', { estimatedHours: null, actualHours: null })]]);
   const response = await fetchClient(worker);
-  const body = (await response.json()).data;
-  assert.equal(body.completed.length, 100);
-  assert.equal(body.notStarted[0].est, 0);
-  assert.equal(body.notStarted[0].act, 0);
+  const body = (await response.json()).months.find(m => m.month === '2026-08').data;
+  assert.equal(body.confirmed.length, 100);
+  assert.equal(body.planned[0].est, null);
+  assert.equal(Object.hasOwn(body.planned[0], 'act'), false);
   assert.deepEqual(calls.filter(c => c.url.pathname.endsWith('/issues')).map(c => c.url.searchParams.get('offset')), ['0', '100']);
 });
 
@@ -192,7 +194,6 @@ test('実Workersランタイムで通信設定を受け付け、転送先へキ�
       });
       const response = await worker.fetch(payloadRequest('/api/clients', 'POST', {
         name: '転送拒否確認', director: '', projectId: 'REDIRECT',
-        monthlyHours: 0, carryOverHours: 0, extraHours: 0,
       }), localEnv);
       assert.equal(response.status, 502);
       const body = await response.text();
@@ -268,7 +269,7 @@ test('公開対象以外を配信せず、静的ファイルにも本番認証�
   let assetCalls = 0;
   const env = { ...localEnv, ASSETS: { fetch: async () => { assetCalls++; return new Response('<html>確認</html>', { headers: { 'Content-Type': 'text/html' } }); } } };
   const { worker } = fixtureWorker();
-  for (const path of ['/.env', '/.env.example', '/worker.js', '/package.json', '/wrangler.jsonc', '/api/unknown']) {
+  for (const path of ['/.env', '/.env.example', '/worker.js', '/package.json', '/wrangler.jsonc', '/api/unknown', '/_next/server/app/page.js', '/_next/static/chunks/app.js.map', '/_next/static/.env', '/_next/static/chunks/%2eenv.js']) {
     assert.equal((await worker.fetch(request(path), env)).status, 404);
   }
   assert.equal(assetCalls, 0);
@@ -282,100 +283,143 @@ test('公開対象以外を配信せず、静的ファイルにも本番認証�
   assert.equal(assetCalls, 1);
 });
 
-test('ビルド出力は公開用3ファイルだけで、.envはGit管理対象外', async () => {
+test('Next.jsの静的出力だけを配信し、秘密情報とソースを混入させない', async () => {
   const root = new URL('../', import.meta.url);
   execFileSync(process.execPath, ['scripts/build.mjs'], { cwd: root });
-  assert.deepEqual((await readdir(new URL('dist/', root))).sort(), ['index.html', 'script.js', 'style.css']);
-  for (const file of ['index.html', 'script.js', 'style.css']) {
-    assert.equal(await readFile(new URL('dist/' + file, root), 'utf8'), await readFile(new URL(file, root), 'utf8'));
-  }
+  const files = await readdir(new URL('dist/', root), { recursive: true });
+  assert.ok(files.includes('index.html'));
+  assert.ok(files.some(file => file.startsWith('_next/static/') && file.endsWith('.js')));
+  assert.ok(files.some(file => file.startsWith('_next/static/') && file.endsWith('.css')));
+  assert.ok(!files.some(file => /(^|\/)(?:\.env|worker\.js|store\.js|package\.json|wrangler\.jsonc)|\.map$/.test(file)));
   assert.equal(execFileSync('git', ['check-ignore', '.env'], { cwd: root, encoding: 'utf8' }).trim(), '.env');
-  const html = await readFile(new URL('index.html', root), 'utf8');
-  const js = await readFile(new URL('script.js', root), 'utf8');
-  assert.equal(html.includes('inputApiKey'), false);
-  assert.equal(js.includes('BACKLOG_API_KEY'), false);
-  assert.equal(js.includes('client.apiKey'), false);
-});
-
-// ブラウザ描画の代替ではなく、画面のイベントと取得APIとの接続を検証する。
-async function loadFrontend(fetchImpl) {
-  const elements = new Map();
-  class Element {
-    constructor() {
-      this.value = ''; this.textContent = ''; this.style = {}; this.events = {};
-      this.classList = { add() {}, remove() {} };
-    }
-    set innerHTML(value) {
-      this.html = value;
-      for (const match of value.matchAll(/id="([^"]+)"[^>]*?(?:value="([^"]*)")?[^>]*>/g)) {
-        const element = new Element();
-        element.id = match[1];
-        element.value = match[2] || '';
-        elements.set(element.id, element);
-      }
-    }
-    get innerHTML() { return this.html || ''; }
-    addEventListener(name, listener) { this.events[name] = listener; }
-    querySelectorAll() { return []; }
-    prepend(element) { elements.set(element.id, element); }
-    remove() { elements.delete(this.id); }
-  }
-  const app = new Element();
-  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
-  app.innerHTML = html;
-  const context = createContext({
-    document: {
-      getElementById: id => elements.get(id) || null,
-      createElement: () => new Element(), querySelector: () => app,
-    },
-    fetch: fetchImpl, URLSearchParams, window: { scrollTo() {} },
-    alert: message => { throw new Error(message); }, confirm: () => true,
-    console, setTimeout, clearTimeout,
-  });
-  await runInContext(await readFile(new URL('../script.js', import.meta.url), 'utf8'), context);
-  return { context, elements };
-}
-
-test('画面の登録からWorker取得・集計・履歴まで、キーを含めず連携する', async () => {
-  const { worker } = fixtureWorker([[issue('完了'), issue('処理中'), issue('未対応')]]);
-  const requests = [];
-  const { context, elements } = await loadFrontend(async (path, init) => {
-    requests.push({ path, init });
-    return worker.fetch(request(path, init), localEnv);
-  });
-  assert.equal(elements.get('btnAddClient').disabled, false);
-  elements.get('btnAddClient').events.click();
-  elements.get('inputName').value = '<img src=x onerror=alert(1)>';
-  elements.get('inputProjectId').value = '456';
-  elements.get('inputMonthly').value = '100';
-  await elements.get('btnSaveClient').events.click();
-  elements.get('detailFrom').value = '2026-08-01';
-  elements.get('detailTo').value = '2026-08-31';
-  await elements.get('btnFetch').events.click();
-  const state = JSON.parse(runInContext('JSON.stringify({ client: clients.find(c => c.projectId === "456"), totals: getClientTotals(clients.find(c => c.projectId === "456")) })', context));
-  assert.equal(state.client.synced, true);
-  assert.equal(state.client.history.length, 1);
-  assert.equal(state.totals.est, 8);
-  assert.equal(state.totals.act, 4);
-  assert.equal(state.totals.remaining, 88);
-  assert.equal(state.totals.notStarted.count, 1);
-  assert.equal(Object.hasOwn(state.client, 'apiKey'), false);
-  assert.equal(requests.some(r => r.init.body?.includes('apiKey')), false);
-  assert.equal(elements.get('detailSection').innerHTML.includes('<img src=x'), false);
-  assert.ok(elements.get('detailSection').innerHTML.includes('&lt;img'));
-  assert.match(elements.get('fetchStatus').textContent, /実データを取得/);
-
-});
-
-test('キー未設定時は画面に取得失敗を表示し、履歴に成功として記録しない', async () => {
   const { worker } = fixtureWorker();
-  const { context, elements } = await loadFrontend((path, init) => worker.fetch(request(path, init), { ...localEnv, BACKLOG_API_KEY: '' }));
-  runInContext('openDetail(clients[0].id)', context);
-  const priorHistory = runInContext('clients[0].history.length', context);
-  elements.get('detailFrom').value = '2026-08-01';
-  elements.get('detailTo').value = '2026-08-31';
-  await elements.get('btnFetch').events.click();
-  assert.match(elements.get('fetchStatus').textContent, /接続設定が未完了/);
-  assert.equal(elements.get('btnFetch').disabled, false);
-  assert.equal(runInContext('clients[0].history.length', context), priorHistory);
+  const env = { ...localEnv, ASSETS: { fetch: async () => new Response('公開用データ') } };
+  for (const file of files.filter(file => /\.(?:html|js|css|txt)$/.test(file))) {
+    const response = await worker.fetch(request('/' + file), env);
+    assert.equal(response.status, 200, file);
+    const content = await readFile(new URL('dist/' + file, root), 'utf8');
+    assert.equal(content.includes('BACKLOG_API_KEY'), false, file);
+    assert.equal(content.includes(localEnv.BACKLOG_API_KEY), false, file);
+  }
+});
+
+test('対象月・月別工数・追加メモを検証し、不正な登録を保存しない', async () => {
+  const { worker, calls } = fixtureWorker();
+  const c = await createStore(localEnv.DB).get(client.id);
+  const base = '/api/clients/' + c.id + '/months/';
+  for (const month of ['2026-13', '2026-00', 'invalid']) {
+    assert.equal((await worker.fetch(payloadRequest(base + month, 'PUT', { revision: c.revision, monthlyHours: 10, carryOverHours: 0 }), localEnv)).status, 400);
+  }
+  for (const values of [{monthlyHours:-1,carryOverHours:0}, {monthlyHours:null,carryOverHours:0}, {monthlyHours:10,carryOverHours:100001}]) {
+    assert.equal((await worker.fetch(payloadRequest(base + '2026-09', 'PUT', { revision:c.revision,...values }), localEnv)).status, 400);
+  }
+  for (const addition of [{hours:0,memo:'見積'}, {hours:1,memo:''}, {hours:1,memo:'x'.repeat(1001)}]) {
+    assert.equal((await worker.fetch(payloadRequest(base + '2026-08/additions', 'POST', {revision:c.revision,...addition}), localEnv)).status, 400);
+  }
+  assert.equal((await worker.fetch(payloadRequest(base + '2026-09/fetch', 'POST', { revision:c.revision }), localEnv)).status, 409);
+  assert.equal(calls.length, 0);
+});
+
+test('状態変更は予定から確定へ移し、予定残工数を維持する', async () => {
+  const first = fixtureWorker([[issue('未対応', {estimatedHours:3,actualHours:999})]]).worker;
+  const before = (await (await fetchClient(first)).json()).months.find(m => m.month === '2026-08');
+  for (const status of ['処理中', '処理済み', '完了']) {
+    const next = fixtureWorker([[issue(status, {estimatedHours:3,actualHours:999})]]).worker;
+    const after = (await (await fetchClient(next)).json()).months.find(m => m.month === '2026-08');
+    assert.equal(after.remaining, before.remaining - 3);
+    assert.equal(after.plannedRemaining, before.plannedRemaining);
+    assert.equal(after.plannedHours, 0);
+    assert.equal(after.confirmedHours, 3);
+  }
+});
+
+test('閏月の末日を含め、翌月の開始日は集計しない', async () => {
+  const store = createStore(localEnv.DB);
+  let c = await store.get(client.id);
+  c = await store.saveMonth(c.id, c.revision, '2028-02', {settings:{monthlyHours:10,carryOverHours:0}}, 'admin');
+  const {worker,calls} = fixtureWorker([[issue('処理済み',{startDate:'2028-02-29T00:00:00Z',estimatedHours:2}),issue('未対応',{startDate:'2028-03-01T00:00:00Z',estimatedHours:7})]]);
+  const response = await worker.fetch(payloadRequest('/api/clients/'+c.id+'/months/2028-02/fetch','POST',{revision:c.revision}),localEnv);
+  assert.equal(response.status,200);
+  const month = (await response.json()).months.find(m=>m.month==='2028-02');
+  assert.equal(month.confirmedHours,2);
+  assert.equal(month.plannedHours,0);
+  assert.equal(month.remaining,8);
+  assert.equal(calls.at(-1).url.searchParams.get('startDateUntil'),'2028-02-29');
+});
+
+test('一般利用者のカスタム集計は月をまたぎ、DBと更新番号を変更しない', async () => {
+  const store = createStore(localEnv.DB);
+  const before = await store.get(client.id);
+  const {worker,calls} = fixtureWorker([[
+    issue('完了',{startDate:'2030-01-31T00:00:00Z',estimatedHours:3,actualHours:999}),
+    issue('処理済み',{startDate:'2030-02-01T00:00:00Z',estimatedHours:2}),
+    issue('未対応',{startDate:'2030-02-15T00:00:00Z',estimatedHours:4}),
+    issue('完了',{startDate:'2030-02-16T00:00:00Z'}),
+    issue('処理中',{startDate:null}),
+  ]]);
+  const response = await worker.fetch(payloadRequest('/api/clients/'+client.id+'/preview','POST',{from:'2030-01-31',to:'2030-02-15'}),{...localEnv,LOCAL_USER_EMAIL:'member@example.test'});
+  assert.equal(response.status,200);
+  const result = await response.json();
+  assert.equal(result.confirmedHours,5);
+  assert.equal(result.plannedHours,4);
+  assert.equal(result.data.confirmed.length,2);
+  assert.equal(result.from,'2030-01-31');
+  assert.equal(result.to,'2030-02-15');
+  assert.equal(Object.hasOwn(result,'remaining'),false);
+  assert.equal(calls.at(-1).url.searchParams.get('startDateSince'),'2030-01-31');
+  assert.equal(calls.at(-1).url.searchParams.get('startDateUntil'),'2030-02-15');
+  assert.deepEqual(await store.get(client.id),before);
+});
+
+test('カスタム取得の不正日付・未登録クライアント・余分な入力を拒否する', async () => {
+  const {worker,calls} = fixtureWorker();
+  const path='/api/clients/'+client.id+'/preview';
+  for (const body of [{from:'2026-02-30',to:'2026-03-01'},{from:'2026-09-01',to:'2026-08-01'},{from:'',to:''},{from:'2026-08-01',to:'2026-08-31',projectId:'OTHER'}]) {
+    assert.equal((await worker.fetch(payloadRequest(path,'POST',body),localEnv)).status,400);
+  }
+  assert.equal((await worker.fetch(request(path),localEnv)).status,405);
+  assert.equal((await worker.fetch(payloadRequest('/api/clients/unknown/preview','POST',{from:'2026-08-01',to:'2026-08-31'}),localEnv)).status,404);
+  assert.equal(calls.length,0);
+});
+
+
+test('Next.jsのチャンクにもAccess認証と許可メソッドを適用する', async () => {
+  let assetCalls = 0;
+  const assetPath = '/_next/static/chunks/dashboard-123.js';
+  const env = { ...localEnv, ASSETS: { fetch: async () => { assetCalls++; return new Response('確認'); } } };
+  const { worker } = fixtureWorker();
+  assert.equal((await worker.fetch(new Request('https://dashboard.example.com' + assetPath), { ...env, ...productionEnv })).status, 401);
+  assert.equal(assetCalls, 0);
+  assert.equal((await worker.fetch(request(assetPath, { method: 'POST' }), env)).status, 405);
+  assert.equal(assetCalls, 0);
+  assert.equal((await worker.fetch(request(assetPath), env)).status, 200);
+  assert.equal(assetCalls, 1);
+});
+
+test('未入力と入力済み0時間を区別して保存し、月別・カスタムの集計値を維持する', async () => {
+  const { worker } = fixtureWorker([[
+    issue('完了', { estimatedHours: null }),
+    issue('処理済み', { estimatedHours: 0 }),
+    issue('処理中', { estimatedHours: 3 }),
+    issue('未対応', { estimatedHours: null }),
+    issue('未対応', { estimatedHours: 0 }),
+    issue('未対応', { estimatedHours: 4 }),
+  ]]);
+  const response = await fetchClient(worker);
+  assert.equal(response.status, 200);
+  const month = (await response.json()).months.find(item => item.month === '2026-08');
+  assert.deepEqual(month.data.confirmed.map(item => item.est), [null, 0, 3]);
+  assert.deepEqual(month.data.planned.map(item => item.est), [null, 0, 4]);
+  assert.equal(month.confirmedHours, 3);
+  assert.equal(month.plannedHours, 4);
+  assert.equal(month.remaining, month.capacity - 3);
+  assert.equal(month.plannedRemaining, month.capacity - 7);
+  const saved = await createStore(localEnv.DB).get(client.id);
+  assert.equal(saved.months.find(item => item.month === '2026-08').data.confirmed[0].est, null);
+  const preview = await worker.fetch(payloadRequest('/api/clients/' + client.id + '/preview', 'POST', { from: '2026-08-01', to: '2026-08-31' }), localEnv);
+  const result = await preview.json();
+  assert.equal(result.confirmedHours, 3);
+  assert.equal(result.plannedHours, 4);
+  assert.deepEqual(result.data.confirmed.map(item => item.est), [null, 0, 3]);
+  assert.deepEqual(await createStore(localEnv.DB).get(client.id), saved);
 });

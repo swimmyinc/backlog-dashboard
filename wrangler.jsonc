@@ -11,9 +11,12 @@
   "build": {
     "command": "npm run build",
     "watch_dir": [
-      "index.html",
-      "style.css",
-      "script.js"
+      "app",
+      "components",
+      "hooks",
+      "lib",
+      "styles",
+      "next.config.mjs"
     ]
   },
   "assets": {

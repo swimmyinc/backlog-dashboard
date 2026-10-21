@@ -1,7 +1,9 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { createStore, HttpError } from './store.js';
 
-const PUBLIC_PATHS = new Set(['/', '/index.html', '/style.css', '/script.js']);
+const PUBLIC_PATHS = new Set(['/', '/index.html', '/index.txt', '/404.html', '/404', '/_not-found', '/_not-found.html', '/_not-found.txt', '/__next.__PAGE__.txt', '/__next._full.txt', '/__next._tree.txt', '/_not-found/__next._not-found.__PAGE__.txt', '/_not-found/__next._full.txt', '/_not-found/__next._tree.txt']);
+// Next.jsの公開用チャンクだけを許可し、ソースマップやサーバーファイルを配信しない。
+const STATIC_ASSET_PATTERN = /^\/_next\/static\/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:js|css|woff2?|ttf|otf|png|jpg|jpeg|gif|svg|webp|ico)$/;
 const PROJECT_PATTERN = /^[A-Za-z0-9_]+$/;
 
 function json(body, status = 200) {
@@ -66,19 +68,19 @@ function validateSettings(body) {
     settings[key] = body[key].trim();
   }
   if (!PROJECT_PATTERN.test(settings.projectId)) throw new HttpError(400, 'プロジェクトIDまたはキーが正しくありません。');
-  for (const key of ['monthlyHours', 'carryOverHours', 'extraHours']) {
-    if (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > 100000 || (key !== 'carryOverHours' && body[key] < 0)) throw new HttpError(400, '工数は数値で入力してください。契約・追加工数は0以上にしてください。');
-    settings[key] = Math.round(body[key] * 100) / 100;
-  }
   return settings;
 }
 
-function makeSnapshot(client, data, from, to, email) {
-  const round = n => Math.round(n * 100) / 100;
-  const total = field => round(round(data.completed.reduce((s, i) => s + i[field], 0)) + round(data.inProgress.reduce((s, i) => s + i[field], 0)));
-  const est = total('est'), act = total('act');
-  const capacity = round(client.monthlyHours + client.carryOverHours + client.extraHours);
-  return { from, to, fetchedAt: new Date().toISOString(), fetchedBy: email, est, act, capacity, remaining: round(capacity - est - act), data };
+function monthRange(month) {
+  if (typeof month !== 'string' || !/^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(month)) throw new HttpError(400, '対象月をYYYY-MM形式で指定してください。');
+  const [year, number] = month.split('-').map(Number);
+  const last = new Date(Date.UTC(year, number, 0)).getUTCDate();
+  return { from: month + '-01', to: month + '-' + last };
+}
+
+function validateHours(value, negative = false) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 100000 || (!negative && value < 0)) throw new HttpError(400, '工数は上限100000時間の数値で入力してください。月次・追加工数は0以上です。');
+  return Math.round(value * 100) / 100;
 }
 
 // 通信関数と公開鍵取得を差し替え、実キーなしで認証・取得を検証できるようにする。
@@ -175,33 +177,34 @@ export function createWorker({ fetchImpl = fetch, jwksFactory = createRemoteJWKS
     if (!Array.isArray(statuses) || !Array.isArray(types)) {
       throw new HttpError(502, 'Backlogの課題設定を読み取れませんでした。');
     }
-    const statusNames = ['完了', '処理中', '未対応'];
+    const statusNames = ['完了', '処理中', '処理済み', '未対応'];
     const statusIds = statuses.filter(s => statusNames.includes(s.name)).map(s => s.id);
     const typeIds = types.filter(t => typeof t.name === 'string' && !t.name.includes('発注')).map(t => t.id);
-    const data = { completed: [], inProgress: [], notStarted: [] };
+    const data = { confirmed: [], planned: [] };
     if (!statusIds.length || !typeIds.length) return data;
 
-    // 更新日で絞り込み、100件ずつ取得する。過大な取得は途中結果を返さず停止する。
-    const groups = { '完了': 'completed', '処理中': 'inProgress', '未対応': 'notStarted' };
+    // 開始日で絞り込み、100件ずつ取得する。過大な取得は途中結果を返さず停止する。
+    const groups = { '完了': 'confirmed', '処理中': 'confirmed', '処理済み': 'confirmed', '未対応': 'planned' };
     for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
       const page = await backlogGet('/issues', {
         'projectId[]': [project.id], 'statusId[]': statusIds, 'issueTypeId[]': typeIds,
-        updatedSince: from, updatedUntil: to, count: 100, offset: pageIndex * 100,
+        startDateSince: from, startDateUntil: to, count: 100, offset: pageIndex * 100,
       });
       if (!Array.isArray(page)) throw new HttpError(502, 'Backlogの課題一覧を読み取れませんでした。');
       for (const issue of page) {
         const group = groups[issue.status?.name];
-        if (!group || !typeIds.includes(issue.issueType?.id)) continue;
+        const startDate = typeof issue.startDate === 'string' ? issue.startDate.slice(0, 10) : '';
+        if (!group || !typeIds.includes(issue.issueType?.id) || !validDate(startDate) || startDate < from || startDate > to) continue;
         data[group].push({
           issueKey: String(issue.issueKey || ''), summary: String(issue.summary || ''),
           status: issue.status.name, type: String(issue.issueType.name || ''),
-          est: Number.isFinite(issue.estimatedHours) ? issue.estimatedHours : 0,
-          act: Number.isFinite(issue.actualHours) ? issue.actualHours : 0,
+          est: Number.isFinite(issue.estimatedHours) ? issue.estimatedHours : null,
+          startDate,
         });
       }
       if (page.length < 100) return data;
     }
-    throw new HttpError(422, '取得件数が多すぎます。集計期間を短くしてください。');
+    throw new HttpError(422, '指定期間の課題数が取得上限を超えています。管理者に確認してください。');
   }
 
   return {
@@ -209,7 +212,7 @@ export function createWorker({ fetchImpl = fetch, jwksFactory = createRemoteJWKS
       try {
         const url = new URL(request.url);
         const api = url.pathname.startsWith('/api/');
-        if (!api && !PUBLIC_PATHS.has(url.pathname)) return json({ error: '見つかりません。' }, 404);
+        if (!api && !PUBLIC_PATHS.has(url.pathname) && !STATIC_ASSET_PATTERN.test(url.pathname)) return json({ error: '見つかりません。' }, 404);
         const origin = request.headers.get('Origin');
         if (api && ((origin && origin !== url.origin) || request.headers.get('Sec-Fetch-Site') === 'cross-site')) {
           throw new HttpError(403, 'このアクセス元からは利用できません。');
@@ -217,44 +220,65 @@ export function createWorker({ fetchImpl = fetch, jwksFactory = createRemoteJWKS
         const user = await authenticate(request, env);
         if (url.pathname === '/api/config' && request.method === 'GET') return json({ ...backlogConfig(env), user });
         if (api) {
-          const match = url.pathname.match(/^\/api\/clients(?:\/([a-zA-Z0-9-]+)(?:\/(fetch|history)(?:\/([a-zA-Z0-9-]+))?)?)?$/);
+          const previewMatch = url.pathname.match(/^\/api\/clients\/([a-zA-Z0-9-]+)\/preview$/);
+          if (previewMatch) {
+            if (request.method !== 'POST') throw new HttpError(405, 'この操作には対応していません。');
+            if (url.search) throw new HttpError(400, '取得条件が正しくありません。');
+            const body = await readBody(request);
+            if (Object.keys(body).some(key => !['from', 'to'].includes(key)) || !validDate(body.from) || !validDate(body.to) || body.from > body.to) throw new HttpError(400, '開始日・終了日を正しい日付で指定してください。');
+            const current = await createStore(env.DB).get(previewMatch[1]);
+            if (current.spaceUrl !== backlogConfig(env).spaceUrl) throw new HttpError(409, '接続先が変更されています。管理者に登録の更新を依頼してください。');
+            const data = await getIssues(current.projectId, body.from, body.to, env);
+            if (new TextEncoder().encode(JSON.stringify(data)).length > 1000000) throw new HttpError(422, '取得データが大きすぎます。期間を短くしてください。');
+            const sum = list => Math.round(list.reduce((total, item) => total + (item.est ?? 0), 0) * 100) / 100;
+            // カスタム期間は確認専用とし、月別設定・取得結果・更新番号を書き換えない。
+            return json({ from: body.from, to: body.to, fetchedAt: new Date().toISOString(), confirmedHours: sum(data.confirmed), plannedHours: sum(data.planned), data });
+          }
+          const match = url.pathname.match(/^\/api\/clients(?:\/([a-zA-Z0-9-]+)(?:\/(history|months)(?:\/([a-zA-Z0-9-]+)(?:\/(fetch|additions))?)?)?)?$/);
           if (!match) throw new HttpError(404, '見つかりません。');
-          const [, id, action, historyId] = match;
+          const [, id, action, key, operation] = match;
           const method = request.method;
           if (url.search) throw new HttpError(400, '取得条件が正しくありません。');
           const store = createStore(env.DB);
           if (method === 'GET' && !action && !id) return json({ clients: await store.list() });
-          if (method === 'GET' && action === 'history' && historyId) return json(await store.history(id, historyId));
-          const registration = (!id && method === 'POST') || (id && !action && ['PUT', 'DELETE'].includes(method));
-          const fetching = id && action === 'fetch' && !historyId && method === 'POST';
-          if (!registration && !fetching) throw new HttpError(405, 'この操作には対応していません。');
-          if (registration && !user.isAdmin) throw new HttpError(403, '登録・編集・削除には管理者権限が必要です。');
+          if (method === 'GET' && action === 'history' && key && !operation) return json(await store.history(id, key));
+          const monthly = action === 'months' && key;
+          const fetching = monthly && operation === 'fetch' && method === 'POST';
+          const adding = monthly && operation === 'additions' && method === 'POST';
+          const monthSettings = monthly && !operation && method === 'PUT';
+          const registration = !action && ((!id && method === 'POST') || (id && ['PUT', 'DELETE'].includes(method)));
+          if (!registration && !fetching && !adding && !monthSettings) throw new HttpError(405, 'この操作には対応していません。');
+          if (!fetching && !user.isAdmin) throw new HttpError(403, '登録・編集・削除には管理者権限が必要です。');
           const body = await readBody(request);
-          const fields = fetching ? ['revision', 'from', 'to'] : method === 'DELETE' ? ['revision'] :
-            ['name', 'director', 'projectId', 'monthlyHours', 'carryOverHours', 'extraHours', ...(id ? ['revision'] : [])];
+          const fields = fetching || method === 'DELETE' ? ['revision'] : adding ? ['revision', 'hours', 'memo'] : monthSettings ? ['revision', 'monthlyHours', 'carryOverHours'] : ['name', 'director', 'projectId', ...(id ? ['revision'] : [])];
           if (Object.keys(body).some(key => !fields.includes(key))) throw new HttpError(400, '指定できない項目が含まれています。');
           if (id && (!Number.isSafeInteger(body.revision) || body.revision < 1)) throw new HttpError(400, '更新番号が正しくありません。');
           if (method === 'DELETE') { await store.remove(id, body.revision); return json({ deleted: true }); }
           const current = id ? await store.get(id) : null;
           if (current && current.revision !== body.revision) throw new HttpError(409, '他の利用者が更新しました。「一覧を更新」してからやり直してください。');
-          const config = backlogConfig(env);
-          if (fetching) {
+          if (monthly) {
+            const { from, to } = monthRange(key);
+            if (monthSettings) return json(await store.saveMonth(id, body.revision, key, { settings: { monthlyHours: validateHours(body.monthlyHours), carryOverHours: validateHours(body.carryOverHours, true) } }, user.email));
+            if (!current.months.some(m => m.month === key)) throw new HttpError(409, '先に対象月の月次工数と繰越工数を登録してください。');
+            if (adding) {
+              const hours = validateHours(body.hours);
+              if (hours <= 0 || typeof body.memo !== 'string' || !body.memo.trim() || body.memo.trim().length > 1000) throw new HttpError(400, '追加工数は0より大きく、メモは1〜1000文字で入力してください。');
+              return json(await store.saveMonth(id, body.revision, key, { addition: { hours, memo: body.memo.trim() } }, user.email));
+            }
+            const config = backlogConfig(env);
             if (current.spaceUrl !== config.spaceUrl) throw new HttpError(409, '接続先が変更されています。管理者に登録の更新を依頼してください。');
-            if (!validDate(body.from) || !validDate(body.to) || body.from > body.to) throw new HttpError(400, '集計期間をYYYY-MM-DD形式で、開始日から終了日の順に指定してください。');
-            const data = await getIssues(current.projectId, body.from, body.to, env);
-            const { history, revision, id: clientId, ...saved } = current;
-            const snapshot = makeSnapshot(saved, data, body.from, body.to, user.email);
-            return json(await store.update(id, body.revision, { ...saved, data, from: body.from, to: body.to, synced: true, updatedBy: user.email }, { snapshot }));
+            const data = await getIssues(current.projectId, from, to, env);
+            return json(await store.saveMonth(id, body.revision, key, { data }, user.email));
           }
+          const config = backlogConfig(env);
           const settings = validateSettings(body);
           settings.projectId = await resolveProject(settings.projectId, env);
           settings.spaceUrl = config.spaceUrl;
           const changed = current && (current.projectId !== settings.projectId || current.spaceUrl !== settings.spaceUrl);
-          const { history, revision, id: clientId, ...previous } = current || {};
-          const today = new Date().toISOString().slice(0, 10);
-          const saved = { from: today.slice(0, 8) + '01', to: today, ...previous, ...settings, updatedBy: user.email };
-          if (!current || changed) { saved.data = null; saved.synced = false; }
-          return json(current ? await store.update(id, body.revision, saved, { clearHistory: changed }) : await store.add(saved), current ? 200 : 201);
+          const { history, months, revision, id: clientId, ...previous } = current || {};
+          // 旧設定・旧履歴は移行資料として保全し、新方式の集計には使用しない。
+          const saved = { ...previous, ...settings, updatedBy: user.email };
+          return json(current ? await store.update(id, body.revision, saved, { clearMonthlyResults: changed }) : await store.add(saved), current ? 200 : 201);
         }
         if (!['GET', 'HEAD'].includes(request.method)) throw new HttpError(405, 'この操作には対応していません。');
         const asset = await env.ASSETS.fetch(request);

@@ -8,7 +8,7 @@ let mf, db, store;
 before(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script: 'export default { fetch() { return new Response("ok"); } }', d1Databases: ['DB'] }] }));
   db = await mf.getD1Database('DB');
-  const sql = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
+  const sql = (await Promise.all(['0001_initial.sql', '0002_monthly_hours.sql'].map(name => readFile(new URL('../migrations/' + name, import.meta.url), 'utf8')))).join('\n');
   await db.batch(sql.split(';').filter(s => s.trim()).map(s => db.prepare(s)));
   store = createStore(db);
 });
@@ -50,16 +50,60 @@ test('一般利用者は閲覧・取得のみ、管理者はプロジェクト�
   let calls = 0;
   const worker = createWorker({ fetchImpl: async url => { calls++; return Response.json(url.pathname.endsWith('/statuses') || url.pathname.endsWith('/issueTypes') ? [] : { id: 999 }); } });
   const req = (path, method = 'GET', body) => new Request('http://localhost' + path, { method, headers: { 'Content-Type': 'application/json', 'Cf-Access-Authenticated-User-Email': 'admin@example.test' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  const body = { name: '新規', director: '', projectId: 'TEST', monthlyHours: 100, carryOverHours: 0, extraHours: 0 };
+  const body = { name: '新規', director: '', projectId: 'TEST' };
   for (const [path, method] of [['/api/clients', 'POST'], ['/api/clients/unknown', 'PUT'], ['/api/clients/unknown', 'DELETE']]) assert.equal((await worker.fetch(req(path, method, body), env)).status, 403);
   assert.equal(calls, 0);
   assert.equal((await worker.fetch(req('/api/clients'), env)).status, 200);
   const response = await worker.fetch(req('/api/clients', 'POST', body), { ...env, LOCAL_USER_EMAIL: 'ADMIN@example.test' });
   assert.equal(response.status, 201);
-  const client = await response.json();
+  let client = await response.json();
   assert.equal(client.projectId, '999');
-  const fetched = await worker.fetch(req('/api/clients/' + client.id + '/fetch', 'POST', { revision: client.revision, from: '2026-08-01', to: '2026-08-31' }), env);
+  const monthPath = '/api/clients/' + client.id + '/months/2026-08';
+  for (const [path, method, payload] of [[monthPath, 'PUT', {monthlyHours:100,carryOverHours:0}], [monthPath + '/additions', 'POST', {hours:5,memo:'見積'}]]) {
+    assert.equal((await worker.fetch(req(path, method, {revision:client.revision,...payload}), env)).status, 403);
+  }
+  client = await store.saveMonth(client.id, client.revision, '2026-08', {settings:{monthlyHours:100,carryOverHours:0}}, 'admin@example.test');
+  const fetched = await worker.fetch(req(monthPath + '/fetch', 'POST', { revision: client.revision }), env);
   assert.equal(fetched.status, 200);
-  assert.equal((await fetched.json()).history[0].fetchedBy, 'member@example.test');
+  assert.equal((await fetched.json()).months[0].fetchedBy, 'member@example.test');
   assert.equal((await worker.fetch(req('/api/clients', 'POST', body), { ...env, LOCAL_USER_EMAIL: 'admin@example.test', ADMIN_EMAILS: '' })).status, 403);
+});
+
+
+test('月別の設定と追加明細を分離し、再取得・競合・旧履歴保全を検証する', async () => {
+  let c = await store.add({...settings,projectId:'monthly-test'});
+  c = await store.update(c.id,c.revision,{...settings,projectId:'monthly-test'},{snapshot});
+  const legacy = c.history[0];
+  assert.equal(c.months.length,0);
+  c = await store.saveMonth(c.id,c.revision,'2026-10',{settings:{monthlyHours:25,carryOverHours:30.5}},'admin');
+  const revision = c.revision;
+  const concurrent = await Promise.allSettled([5,8].map(hours => store.saveMonth(c.id,revision,'2026-10',{addition:{hours,memo:'追加見積'}},'admin')));
+  assert.equal(concurrent.filter(r => r.status === 'fulfilled').length,1);
+  assert.equal(concurrent.find(r => r.status === 'rejected').reason.status,409);
+  c = await store.get(c.id);
+  assert.equal(c.months[0].additions.length,1);
+  const extra = c.months[0].extraHours;
+  c = await store.saveMonth(c.id,c.revision,'2026-10',{addition:{hours:.1,memo:'少数1'}},'admin');
+  c = await store.saveMonth(c.id,c.revision,'2026-10',{addition:{hours:.2,memo:'少数2'}},'admin');
+  assert.equal(c.months[0].extraHours,extra+.3);
+  c = await store.saveMonth(c.id,c.revision,'2026-10',{data:{confirmed:[{est:3}],planned:[{est:4}]}},'member');
+  assert.equal(c.months[0].remaining,55.5+extra+.3-3);
+  assert.equal(c.months[0].plannedRemaining,55.5+extra+.3-7);
+  const stale = c.revision;
+  c = await store.saveMonth(c.id,c.revision,'2026-11',{settings:{monthlyHours:10,carryOverHours:-2}},'admin');
+  await assert.rejects(store.saveMonth(c.id,stale,'2026-10',{data:{confirmed:[],planned:[]}},'member'),e=>e.status===409);
+  assert.equal(c.months.find(m=>m.month==='2026-11').capacity,8);
+  assert.equal(c.months.find(m=>m.month==='2026-11').synced,false);
+  c = await store.saveMonth(c.id,c.revision,'2026-10',{settings:{monthlyHours:30,carryOverHours:0}},'admin');
+  assert.equal(c.months.find(m=>m.month==='2026-10').confirmedHours,3);
+  assert.equal(c.months.find(m=>m.month==='2026-10').additions.length,3);
+  await assert.rejects(store.saveMonth(c.id,c.revision,'2026-10',{data:{confirmed:[],planned:[],large:'あ'.repeat(400000)}},'member'),e=>e.status===422);
+  assert.equal((await store.get(c.id)).revision,c.revision);
+  assert.deepEqual(await store.history(c.id,legacy.id),{...snapshot,id:legacy.id});
+  c = await store.update(c.id,c.revision,{...settings,projectId:'changed'},{clearMonthlyResults:true});
+  assert.ok(c.months.every(m=>!m.synced));
+  assert.equal(c.months.find(m=>m.month==='2026-10').additions.length,3);
+  assert.equal(c.history.length,1);
+  await store.remove(c.id,c.revision);
+  for(const table of ['client_months','additional_hours','monthly_results']) assert.equal((await db.prepare('SELECT count(*) AS n FROM '+table+' WHERE client_id = ?').bind(c.id).first()).n,0);
 });
