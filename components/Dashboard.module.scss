@@ -30,8 +30,9 @@
     place-items:center;
     background:#6183e2;
     border-radius:7px;
-    font-size:24px;
-    line-height:1
+    flex-shrink:0;
+    line-height:1;
+    svg { display:block; }
   }
   .sidebar-home {
     border:0;

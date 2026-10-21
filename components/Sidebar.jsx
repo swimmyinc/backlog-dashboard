@@ -5,7 +5,7 @@ const cx = classNames(styles);
 
 export default function Sidebar({ dashboard: d }) {
   return <aside className={cx('sidebar')}>
-    <a className={cx('brand')} href="#" onClick={event => { event.preventDefault(); d.backToList(); }}><span className={cx('brand-icon')} aria-hidden="true">◷</span>工数集計</a>
+    <a className={cx('brand')} href="#" onClick={event => { event.preventDefault(); d.backToList(); }}><span className={cx('brand-icon')} aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>工数集計</a>
     <button className={cx('sidebar-home')} onClick={d.backToList}>▦ クライアント一覧</button>
     <p className={cx('sidebar-label')}>クライアント</p>
     <nav className={cx('sidebar-clients')} aria-label="クライアント">
