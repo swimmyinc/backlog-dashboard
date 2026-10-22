@@ -19,6 +19,6 @@ export default function Sidebar({ dashboard: d }) {
       {d.settings && !d.clients.length && <p className={cx('sidebar-empty')}>登録済みのクライアントはありません</p>}
     </nav>
     {d.isAdmin && <button className={cx('sidebar-add')} onClick={() => d.openModal()} disabled={d.pending}>＋ クライアントを追加</button>}
-    <div className={cx('sidebar-footer')}>保守工数ダッシュボード<span>Backlog とつながる工数管理</span></div>
+    <div className={cx('sidebar-footer')}>工数管理ダッシュボード<span>© 2026 YUKINO</span></div>
   </aside>;
 }
