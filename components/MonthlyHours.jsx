@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useImperativeHandle, useState } from 'react';
 import HoursModal from './HoursModal.jsx';
 import AdditionalHours from './AdditionalHours.jsx';
 import { classNames, availableText, balClass, hours, monthLabel, numberInput } from '../lib/format.js';
 import styles from './Dashboard.module.scss';
 const cx = classNames(styles);
 
-export default function MonthlyHours({ dashboard: d, month }) {
+export default function MonthlyHours({ dashboard: d, month, ref }) {
   const client = d.selectedClient;
   const [year, monthNumber] = d.selectedMonth.split('-').map(Number);
   const previousMonthKey = (monthNumber === 1 ? year - 1 : year) + '-' + String(monthNumber === 1 ? 12 : monthNumber - 1).padStart(2, '0');
@@ -14,7 +14,7 @@ export default function MonthlyHours({ dashboard: d, month }) {
     ? previousMonth.remaining : null;
   const [monthlyHours, setMonthlyHours] = useState(String(month?.monthlyHours ?? ''));
   const [carryHours, setCarryHours] = useState(String(month?.carryOverHours ?? suggestedCarry ?? 0));
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(d.isAdmin && !month);
   const [saveFailed, setSaveFailed] = useState(false);
   function openSettings() {
     setMonthlyHours(String(month?.monthlyHours ?? ''));
@@ -22,6 +22,7 @@ export default function MonthlyHours({ dashboard: d, month }) {
     setSaveFailed(false);
     setEditing(true);
   }
+  useImperativeHandle(ref, () => ({ openSettings }));
   const amount = name => availableText(month, name);
   const width = value => Math.max(0, Math.min(100, value / Math.max(month?.capacity || 0, month?.confirmedHours || 0, 1) * 100)) + '%';
   const path = '/months/' + d.selectedMonth;
@@ -44,7 +45,7 @@ export default function MonthlyHours({ dashboard: d, month }) {
       </details>
     </section>
     <section className={cx('surface contract-panel')} aria-label="工数設定">
-        <div className={cx('panel-heading')}><h3>工数設定</h3>{d.isAdmin && <button className={cx('ghost')} disabled={d.pending} onClick={openSettings}>{month ? '更新' : '月次・繰越を登録'}</button>}</div>
+        <div className={cx('panel-heading')}><h3>工数設定</h3>{d.isAdmin && month && <button className={cx('ghost')} disabled={d.pending} onClick={openSettings}>更新</button>}</div>
         <dl className={cx('settings-values')}><div><dt>月次</dt><dd>{month ? hours(month.monthlyHours) + 'h' : '未設定'}</dd></div><div><dt>繰越</dt><dd>{month ? hours(month.carryOverHours) + 'h' : '未設定'}</dd></div><div className={cx('additional-value')}><dt>追加</dt><dd>{month ? hours(month.extraHours) + 'h' : '—'}</dd></div></dl>
         {!d.isAdmin && <p className={cx('muted')}>月別設定の登録・変更は管理者が行います。</p>}
       {editing && <HoursModal title="月次・繰越工数の設定" pending={d.pending} onClose={() => setEditing(false)}>

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import MonthSelector from './MonthSelector.jsx';
 import MonthlyHours from './MonthlyHours.jsx';
 import IssueGroup from './IssueGroup.jsx';
@@ -8,6 +8,7 @@ import styles from './Dashboard.module.scss';
 const cx = classNames(styles);
 
 export default function ClientDetail({ dashboard: d }) {
+  const monthlySettingsRef = useRef(null);
   const client = d.selectedClient;
   const month = getMonth(client, d.selectedMonth);
   const custom = d.periodMode === 'custom';
@@ -27,6 +28,7 @@ export default function ClientDetail({ dashboard: d }) {
       {custom ? <button className={cx('ghost import-button')} disabled={d.pending} onClick={d.fetchCustom}>↻ この期間で取得</button>
         : month && <button className={cx('ghost import-button')} disabled={d.pending} onClick={() => d.mutate(client, '/months/' + d.selectedMonth + '/fetch', 'POST', {}, '対象月の課題を取得しました。')}>↻ Backlogから取り込み</button>}
       {d.isAdmin && <button className={cx('ghost')} disabled={d.pending} onClick={() => d.openModal(client)}>設定</button>}
+      {d.isAdmin && !custom && !month && <button className={cx('primary')} disabled={d.pending} onClick={() => monthlySettingsRef.current?.openSettings()}>月次初期設定</button>}
       </div>
     </header>
     <div className={cx('period-toolbar')}>
@@ -37,7 +39,7 @@ export default function ClientDetail({ dashboard: d }) {
     {custom ? <section className={cx('current-month custom-summary')} aria-label="カスタム期間の集計"><div className={cx('current-month-heading')}><span className={cx('current-month-label')}>表示対象期間</span><h2>{d.customRange.from || '未指定'} 〜 {d.customRange.to || '未指定'}</h2><p className={cx('muted')}>確認用の集計です。月別データは更新しません。</p></div><dl className={cx('current-month-totals')}><div><dt>確定工数</dt><dd>{result ? hours(result.confirmedHours) + 'h' : '—'}</dd></div><div><dt>予定工数</dt><dd>{result ? hours(result.plannedHours) + 'h' : '—'}</dd></div></dl></section>
       : <>
         {otherMonths.length > 0 && <section className={cx('other-months')} aria-label="ほかの月"><h2>ほかの月</h2><nav className={cx('period-cards')} aria-label="ほかの登録済みの月">{otherMonths.map(item => <button className={cx('period-card')} key={item.month} onClick={() => d.changeMonth(item.month)}><span><b>{monthLabel(item.month)}</b><small>{item.synced ? '取得済み' : '未取得'}</small></span><span>残 {availableText(item, 'remaining')}</span><span className={cx('period-date')}>予定残 {availableText(item, 'plannedRemaining')}</span></button>)}</nav></section>}
-        <MonthlyHours key={client.id + ':' + d.selectedMonth + ':' + client.revision} dashboard={d} month={month} />
+        <MonthlyHours ref={monthlySettingsRef} key={client.id + ':' + d.selectedMonth + ':' + client.revision} dashboard={d} month={month} />
       </>}
     <div className={cx('section-title issue-title')}><h2>課題</h2><span>{custom ? '開始日が指定期間内の課題・予定時間で集計' : '開始日が' + monthLabel(d.selectedMonth) + 'の課題・予定時間で集計'}</span></div>
     <IssueGroup spaceUrl={client.spaceUrl} key={groupKey + ":confirmed"} title="確定工数" description={custom ? '完了・処理中・処理済みの予定時間' : '完了・処理中・処理済みの予定時間を残工数から差し引きます'} issues={confirmed} variant="completed" synced={custom ? Boolean(result) : month?.synced} />

@@ -90,7 +90,8 @@ test('React画面から月別設定・追加・取得を行い、予定時間だ
   expect(document.querySelector('img')).toBeNull();
   expect(fetchMock.mock.calls.some(([, init]) => init.body?.includes('apiKey'))).toBe(false);
   await selectMonth('詳細の対象月', '2026-09');
-  expect(screen.getByRole('button', { name: '月次・繰越を登録' })).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: '月次・繰越工数の設定' })).toBeTruthy();
+  await click('キャンセル');
   await selectMonth('詳細の対象月', '2026-08');
   expect(within(screen.getByRole('region', { name: '工数の内訳' })).getByText('103h')).toBeTruthy();
 });
@@ -195,8 +196,10 @@ test('クライアントの登録・編集・削除と確認キャンセルを�
   await click('登録する');
   await screen.findByRole('heading', { name: '<img src=x onerror=alert(1)>', level: 1 });
   expect(document.querySelector('img')).toBeNull();
+  await click('キャンセル');
   await click('設定'); change('クライアント名', '変更後の顧客'); await click('更新する');
   await screen.findByRole('heading', { name: '変更後の顧客', level: 1 });
+  await click('キャンセル');
   await click('設定');
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   await click('クライアントを削除');
@@ -285,6 +288,7 @@ test.each(['月', 'カスタム期間'])('%sで入力済み0時間と未入力�
   expect(within(planned).getAllByRole('listitem')).toHaveLength(2);
   if (mode === '月') {
     await selectMonth('詳細の対象月', '2026-09');
+    await click('キャンセル');
     await selectMonth('詳細の対象月', '2026-08');
   } else {
     change('開始日', '2026-08-02');
@@ -298,14 +302,18 @@ test('月選択は入力なしで年またぎの移動と選択、Escape・外�
   await openDetail();
   expect(document.querySelector('input[type="month"]')).toBeNull();
   await selectMonth('詳細の対象月', '2026-12');
+  await click('キャンセル');
   await click('次月');
   expect(screen.getByRole('button', { name: '詳細の対象月' }).textContent).toContain('2027年01月');
+  if (screen.queryByRole('dialog')) await click('キャンセル');
   await click('前月');
   expect(screen.getByRole('button', { name: '詳細の対象月' }).textContent).toContain('2026年12月');
+  if (screen.queryByRole('dialog')) await click('キャンセル');
   await click('詳細の対象月');
   await click('前年');
   await click('2025年03月');
   expect(screen.getByRole('button', { name: '詳細の対象月' }).textContent).toContain('2025年03月');
+  if (screen.queryByRole('dialog')) await click('キャンセル');
   expect(document.activeElement).toBe(screen.getByRole('button', { name: '詳細の対象月' }));
   await userEvent.keyboard('{Enter}');
   expect(document.activeElement.getAttribute('aria-label')).toBe('2025年03月');
@@ -315,6 +323,7 @@ test('月選択は入力なしで年またぎの移動と選択、Escape・外�
   await userEvent.click(screen.getByRole('heading', { name: 'テスト顧客', level: 1 }));
   expect(screen.queryByRole('group', { name: '月を選択' })).toBeNull();
   expect(screen.getByRole('button', { name: '詳細の対象月' }).textContent).toContain('2025年03月');
+  if (screen.queryByRole('dialog')) await click('キャンセル');
 });
 
 test.each(['月', 'カスタム期間'])('%sの課題タイトルがBacklogの別タブリンクになり、工数に単位を付ける', async mode => {
@@ -350,7 +359,6 @@ test.each([
   const before = await store.get(client.id);
   await openDetail();
   await selectMonth('詳細の対象月', target);
-  await click('月次・繰越を登録');
   expect(screen.getByLabelText('繰越工数（h）').value).toBe(expected);
   expect(Boolean(screen.queryByText(/を初期値にしています/))).toBe(hint);
   expect(await store.get(client.id)).toEqual(before);
@@ -360,7 +368,6 @@ test('繰越初期値を手動で0に変更して保存し、前月が変わっ�
   await openDetail();
   await fetchMonth();
   await click('次月');
-  await click('月次・繰越を登録');
   expect(screen.getByLabelText('繰越工数（h）').value).toBe('98');
   change('月次工数（h）', '25');
   change('繰越工数（h）', '0');
@@ -384,7 +391,6 @@ test('前月の残工数の初期値をそのまま登録できる', async () =>
   await openDetail();
   await fetchMonth();
   await click('次月');
-  await click('月次・繰越を登録');
   change('月次工数（h）', '25');
   await click('保存する');
   await screen.findByText('月別工数を保存しました。');
@@ -527,6 +533,7 @@ test('工数設定に月次・繰越の保存値を表示し、保存と月切�
   await click('次月');
   expect(readValue('月次')).toBe('未設定');
   expect(readValue('繰越')).toBe('未設定');
+  await click('キャンセル');
   await click('前月');
   expect(readValue('月次')).toBe('120h');
   expect(readValue('繰越')).toBe('0h');
@@ -544,6 +551,7 @@ test('青枠の月情報を削除し、月選択の右に取得状態を表示�
   expect(month.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await click('次月');
   expect(within(toolbar).getByText('月未登録')).toBeTruthy();
+  await click('キャンセル');
   await click('カスタム期間');
   expect(within(toolbar).getByLabelText('開始日')).toBeTruthy();
   expect(within(toolbar).getByLabelText('終了日')).toBeTruthy();
@@ -588,4 +596,48 @@ test('タイトル下に担当者と最終取得を表示し、ヘッダーの�
   expect(header.textContent).toContain('Backlog最終取得');
   await click('カスタム期間');
   expect(within(header).getByRole('button', { name: '設定' })).toBeTruthy();
+});
+
+test('未登録月の初期設定を自動表示し、ヘッダーから再表示して保存できる', async () => {
+  await openDetail();
+  expect(screen.queryByRole('button', { name: '月次初期設定' })).toBeNull();
+  await click('次月');
+  expect(screen.getByRole('dialog', { name: '月次・繰越工数の設定' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '月次・繰越を登録' })).toBeNull();
+  change('月次工数（h）', '50');
+  await click('キャンセル');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect((await store.get(client.id)).months.some(item => item.month === '2026-09')).toBe(false);
+  const header = screen.getByRole('heading', { level: 1 }).closest('header');
+  expect(within(header).getByRole('button', { name: '設定' }).nextElementSibling.textContent).toBe('月次初期設定');
+  await click('月次初期設定');
+  expect(screen.getByLabelText('月次工数（h）').value).toBe('');
+  await userEvent.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await click('前月');
+  await click('次月');
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  change('月次工数（h）', '25');
+  await click('保存する');
+  await screen.findByText('月別工数を保存しました。');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('button', { name: '月次初期設定' })).toBeNull();
+  expect(screen.getByRole('button', { name: '更新', exact: true })).toBeTruthy();
+  expect((await store.get(client.id)).months.find(item => item.month === '2026-09').monthlyHours).toBe(25);
+});
+
+test('一般利用者の未登録月とカスタム期間には初期設定を表示しない', async () => {
+  env.LOCAL_USER_EMAIL = 'member@example.test';
+  await openDetail();
+  await click('次月');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('button', { name: '月次初期設定' })).toBeNull();
+  cleanup();
+  env.LOCAL_USER_EMAIL = 'admin@example.test';
+  await openDetail();
+  await click('次月');
+  await click('キャンセル');
+  await click('カスタム期間');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('button', { name: '月次初期設定' })).toBeNull();
 });
