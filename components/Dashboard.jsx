@@ -17,7 +17,6 @@ export default function Dashboard() {
     <Sidebar dashboard={dashboard} />
     <main className={cx('app')}>
       {notice && <div className={cx('notice', notice.error && 'notice-error')} role={notice.error ? 'alert' : 'status'}><span>{notice.message}</span><button type="button" className={cx('notice-close')} aria-label="通知を閉じる" onClick={dashboard.dismissNotice}><span aria-hidden="true">×</span></button></div>}
-      <div className={cx('session-bar')}><span className={cx('user-identity')}>{settings && settings.user.email + (dashboard.isAdmin ? '（管理者）' : '（閲覧・取得）')}</span><button className={cx('ghost')} onClick={dashboard.refresh} disabled={pending}>一覧を更新</button></div>
       {selectedClient ? <>
         <button className={cx('ghost back-button')} onClick={dashboard.backToList}>← クライアント一覧に戻る</button>
         <ClientDetail key={selectedClient.id} dashboard={dashboard} />

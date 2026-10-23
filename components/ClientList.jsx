@@ -10,13 +10,13 @@ export default function ClientList({ dashboard: d }) {
   const synced = d.clients.map(client => getMonth(client, d.selectedMonth)).filter(month => month?.synced);
   const list = d.clients.filter(client => (!d.filterText || client.name.toLowerCase().includes(d.filterText.toLowerCase())) && (!director || client.director === director));
   return <>
-    <header className={cx('top')}><div className={cx('brand')}><h1>クライアント一覧</h1><p className={cx('sub')}>対象月のクライアント別の残工数・確定工数・予定工数を確認できます。各クライアントの詳細画面で、月別工数の設定やBacklog課題の取り込みを行えます。</p></div></header>
+    <header className={cx('top list-head')}><div className={cx('brand')}><h1>クライアント一覧</h1><p className={cx('sub')}>対象月のクライアント別の残工数・確定工数・予定工数を確認できます。各クライアントの詳細画面で、月別工数の設定やBacklog課題の取り込みを行えます。</p></div><button type="button" className={cx('list-refresh')} aria-label="一覧を更新" title="一覧を更新" onClick={d.refresh} disabled={d.pending}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" /></svg><span>更新</span></button></header>
     <div className={cx('overview-stats')}>
       <div><span>登録クライアント</span><strong>{d.clients.length}<small>件</small></strong></div>
       <div><span>{monthLabel(d.selectedMonth)} 取得済み</span><strong>{synced.length}<small>件</small></strong></div>
       <div><span>残工数が20%未満</span><strong>{synced.filter(month => month.remaining <= 0 || month.remaining < month.capacity * .2).length}<small>件</small></strong></div>
     </div>
-    <div className={cx('toolbar')}><div className={cx('filters')}>
+    <div className={cx('toolbar')}><div className={cx('filters')} role="group" aria-label="一覧の検索・絞り込み">
       <MonthSelector value={d.selectedMonth} onChange={d.changeMonth} label="一覧の対象月" />
       <input type="text" aria-label="クライアント名で検索" placeholder="クライアント名で検索" value={d.filterText} onChange={event => d.setFilterText(event.target.value)} />
       <select aria-label="担当者で絞り込み" value={director} onChange={event => d.setFilterDirector(event.target.value)}><option value="">すべての担当者</option>{directors.map(name => <option key={name}>{name}</option>)}</select>

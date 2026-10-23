@@ -74,10 +74,11 @@ async function fetchMonth() {
 
 test('React画面から月別設定・追加・取得を行い、予定時間だけで集計する', async () => {
   await openDetail();
+  await click('更新');
   change('月次工数（h）', '100'); change('繰越工数（h）', '10');
-  await click('月別設定を更新');
+  await click('保存する');
   await screen.findByText('月別工数を保存しました。');
-  await userEvent.click(screen.getByText('追加工数を入力', { exact: true }));
+  await click('追加工数を入力');
   change('追加する工数（h）', '5'); change('メモ（必須）', '<img src=x>追加見積');
   await click('＋ 追加工数を記録');
   await screen.findByText('追加工数を記録しました。');
@@ -85,13 +86,13 @@ test('React画面から月別設定・追加・取得を行い、予定時間だ
   const month = await savedMonth();
   expect(month).toMatchObject({ capacity: 115, confirmedHours: 12, plannedHours: 4, remaining: 103, plannedRemaining: 99, synced: true });
   expect(month.additions).toHaveLength(1);
-  expect(within(screen.getByRole('region', { name: '表示中の月' })).getByText('103h')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: '工数の内訳' })).getByText('103h')).toBeTruthy();
   expect(document.querySelector('img')).toBeNull();
   expect(fetchMock.mock.calls.some(([, init]) => init.body?.includes('apiKey'))).toBe(false);
   await selectMonth('詳細の対象月', '2026-09');
-  expect(screen.getByRole('button', { name: 'この月を登録' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '月次・繰越を登録' })).toBeTruthy();
   await selectMonth('詳細の対象月', '2026-08');
-  expect(within(screen.getByRole('region', { name: '表示中の月' })).getByText('103h')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: '工数の内訳' })).getByText('103h')).toBeTruthy();
 });
 
 test('一般利用者は取得と履歴閲覧ができ、管理入力は表示しない', async () => {
@@ -99,8 +100,8 @@ test('一般利用者は取得と履歴閲覧ができ、管理入力は表示�
   await openDetail();
   expect(screen.queryByRole('button', { name: '＋ クライアントを追加' })).toBeNull();
   expect(screen.queryByLabelText('月次工数（h）')).toBeNull();
-  expect(screen.queryByText('追加工数を入力', { exact: true })).toBeNull();
-  expect(screen.getByText('追加履歴', { exact: false })).toBeTruthy();
+  for (const name of ['設定', '更新', '追加工数を入力']) expect(screen.queryByRole('button', { name, exact: true })).toBeNull();
+  expect(screen.getByText('工数追加履歴', { exact: false })).toBeTruthy();
   await fetchMonth();
   expect((await savedMonth()).fetchedBy).toBe('member@example.test');
 });
@@ -129,7 +130,7 @@ test('カスタム期間は課題と確定・予定だけを表示し、月別�
   expect(within(summary).getByText('4h')).toBeTruthy();
   expect(await store.get(client.id)).toEqual(before);
   await click('月');
-  expect(screen.getByLabelText('月次工数（h）').value).toBe('100');
+  expect(within(screen.getByRole('region', { name: '工数設定' })).getByText('100h')).toBeTruthy();
   await click('カスタム期間');
   expect(screen.queryByText('12h')).toBeNull();
 });
@@ -143,9 +144,26 @@ test('カスタム取得中の移動で遅い応答を無視し、二重送信�
   expect(fetchMock.mock.calls.filter(([path]) => path.endsWith('/preview'))).toHaveLength(1);
   await click('月');
   await act(async () => { complete(Response.json({ confirmedHours: 999, plannedHours: 999, data: { confirmed: [], planned: [] } })); });
-  expect(screen.getByLabelText('月次工数（h）')).toBeTruthy();
+  expect(screen.getByRole('button', { name: '更新' })).toBeTruthy();
   expect(screen.queryByText('999h')).toBeNull();
+  await click('← クライアント一覧に戻る');
   expect(screen.getByRole('button', { name: '一覧を更新' }).disabled).toBe(false);
+});
+
+test('工数内訳を初期状態で閉じ、開閉できる', async () => {
+  await openDetail();
+  const panel = screen.getByRole('region', { name: '工数の内訳' });
+  const toggle = within(panel).getByText('内訳を表示');
+  const accordion = toggle.closest('details');
+  expect(accordion.open).toBe(false);
+  await userEvent.click(toggle);
+  expect(accordion.open).toBe(true);
+  expect(within(accordion).getByText('月次工数')).toBeTruthy();
+  expect(within(accordion).getByText('予定残工数')).toBeTruthy();
+  await userEvent.click(toggle);
+  expect(accordion.open).toBe(false);
+  await selectMonth('詳細の対象月', '2026-09');
+  expect(screen.getByText('内訳を表示').closest('details').open).toBe(false);
 });
 
 test('表示中の月を除く登録済み月を過去から未来へ並べる', async () => {
@@ -177,9 +195,9 @@ test('クライアントの登録・編集・削除と確認キャンセルを�
   await click('登録する');
   await screen.findByRole('heading', { name: '<img src=x onerror=alert(1)>', level: 1 });
   expect(document.querySelector('img')).toBeNull();
-  await click('基本情報'); change('クライアント名', '変更後の顧客'); await click('更新する');
+  await click('設定'); change('クライアント名', '変更後の顧客'); await click('更新する');
   await screen.findByRole('heading', { name: '変更後の顧客', level: 1 });
-  await click('基本情報');
+  await click('設定');
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   await click('クライアントを削除');
   expect(screen.getByRole('dialog')).toBeTruthy();
@@ -193,13 +211,19 @@ test('クライアントの登録・編集・削除と確認キャンセルを�
 test('更新競合では入力を保持してエラーを示し、再読み込みで最新値を取得する', async () => {
   await openDetail();
   await store.saveMonth(client.id, client.revision, '2026-08', { settings: { monthlyHours: 80, carryOverHours: 0 } }, 'other');
+  await click('更新');
   change('月次工数（h）', '200');
-  await click('月別設定を更新');
+  await click('保存する');
   await screen.findByRole('alert');
   expect(screen.getByLabelText('月次工数（h）').value).toBe('200');
+  await click('キャンセル');
   expect((await savedMonth()).monthlyHours).toBe(80);
+  await click('← クライアント一覧に戻る');
   await click('一覧を更新');
-  await waitFor(() => expect(screen.getByLabelText('月次工数（h）').value).toBe('80'));
+  await waitFor(() => expect(screen.getByRole('button', { name: '一覧を更新' }).disabled).toBe(false));
+  await click('詳細を見る');
+  await click('更新');
+  expect(screen.getByLabelText('月次工数（h）').value).toBe('80');
 });
 
 test('旧履歴の保存値と旧実績を参照できる', async () => {
@@ -326,6 +350,7 @@ test.each([
   const before = await store.get(client.id);
   await openDetail();
   await selectMonth('詳細の対象月', target);
+  await click('月次・繰越を登録');
   expect(screen.getByLabelText('繰越工数（h）').value).toBe(expected);
   expect(Boolean(screen.queryByText(/を初期値にしています/))).toBe(hint);
   expect(await store.get(client.id)).toEqual(before);
@@ -335,18 +360,22 @@ test('繰越初期値を手動で0に変更して保存し、前月が変わっ�
   await openDetail();
   await fetchMonth();
   await click('次月');
+  await click('月次・繰越を登録');
   expect(screen.getByLabelText('繰越工数（h）').value).toBe('98');
   change('月次工数（h）', '25');
   change('繰越工数（h）', '0');
-  await click('この月を登録');
+  await click('保存する');
   await screen.findByText('月別工数を保存しました。');
   expect((await store.get(client.id)).months.find(item => item.month === '2026-09').carryOverHours).toBe(0);
   const latest = await store.get(client.id);
   await store.saveMonth(client.id, latest.revision, '2026-08', { settings: { monthlyHours: 200, carryOverHours: 0 } }, 'admin');
+  await click('← クライアント一覧に戻る');
   await click('一覧を更新');
   await waitFor(() => expect(screen.getByRole('button', { name: '一覧を更新' }).disabled).toBe(false));
+  await click('詳細を見る');
   await click('前月');
   await click('次月');
+  await click('更新');
   expect(screen.getByLabelText('繰越工数（h）').value).toBe('0');
   expect(screen.queryByText(/を初期値にしています/)).toBeNull();
 });
@@ -355,8 +384,9 @@ test('前月の残工数の初期値をそのまま登録できる', async () =>
   await openDetail();
   await fetchMonth();
   await click('次月');
+  await click('月次・繰越を登録');
   change('月次工数（h）', '25');
-  await click('この月を登録');
+  await click('保存する');
   await screen.findByText('月別工数を保存しました。');
   expect((await store.get(client.id)).months.find(item => item.month === '2026-09')).toMatchObject({ carryOverHours: 98, capacity: 123 });
 });
@@ -381,4 +411,181 @@ test('成功・エラーの上部通知を閉じても保存データを維持�
   env.BACKLOG_API_KEY = 'test-only-secret';
   await fetchMonth();
   expect(screen.getByRole('button', { name: '通知を閉じる' })).toBeTruthy();
+});
+
+
+test.each([['admin@example.test', '（管理者）'], ['member@example.test', '（閲覧・取得）']])('ユーザー%sをサイドバーに表示し、更新ボタンは一覧だけに表示する', async (email, role) => {
+  env.LOCAL_USER_EMAIL = email;
+  await openDashboard();
+  const sidebar = screen.getByRole('complementary');
+  expect(within(sidebar).getByText(email).textContent).toBe(email + role);
+  expect(within(screen.getByRole('main')).queryByText(email)).toBeNull();
+  expect(screen.getByRole('button', { name: '一覧を更新' })).toBeTruthy();
+  await click('詳細を見る');
+  expect(within(sidebar).getByText(email).textContent).toBe(email + role);
+  expect(screen.queryByRole('button', { name: '一覧を更新' })).toBeNull();
+  expect(screen.getByRole('button', { name: '↻ Backlogから取り込み' })).toBeTruthy();
+  await click('カスタム期間');
+  expect(screen.queryByRole('button', { name: '一覧を更新' })).toBeNull();
+  await click('← クライアント一覧に戻る');
+  expect(screen.getByRole('button', { name: '一覧を更新' })).toBeTruthy();
+});
+
+
+test('見出しの更新ボタンで絞り込みを維持して最新一覧を取得する', async () => {
+  await openDashboard();
+  const controls = screen.getByRole('group', { name: '一覧の検索・絞り込み' });
+  expect(within(controls).queryByRole('button', { name: '一覧を更新' })).toBeNull();
+  const header = screen.getByRole('heading', { name: 'クライアント一覧' }).closest('header');
+  const refresh = within(header).getByRole('button', { name: '一覧を更新' });
+  expect(refresh.textContent).toBe('更新');
+  expect(refresh.querySelector('svg')).toBeTruthy();
+  expect(refresh.getAttribute('title')).toBe('一覧を更新');
+  change('クライアント名で検索', '追加');
+  await store.add({ name: '追加の顧客', director: '', projectId: '456', spaceUrl: env.BACKLOG_SPACE_URL });
+  await userEvent.click(refresh);
+  await waitFor(() => expect(screen.getByRole('article').textContent).toContain('追加の顧客'));
+  expect(screen.getByLabelText('クライアント名で検索').value).toBe('追加');
+  expect(screen.getAllByRole('article')).toHaveLength(1);
+});
+
+
+test('工数モーダルをキャンセル・Escapeで閉じ、再度開くと保存済み値に戻る', async () => {
+  await openDetail();
+  const before = await savedMonth();
+  const header = screen.getByRole('heading', { level: 1 }).closest('header');
+  expect(header.textContent).toContain('担当A');
+  expect(screen.queryByLabelText('月次工数（h）')).toBeNull();
+  await click('更新');
+  expect(document.activeElement).toBe(screen.getByLabelText('月次工数（h）'));
+  change('月次工数（h）', '999');
+  await userEvent.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: '更新' }));
+  await click('更新');
+  expect(screen.getByLabelText('月次工数（h）').value).toBe('100');
+  await click('キャンセル');
+  await click('追加工数を入力');
+  change('追加する工数（h）', '5'); change('メモ（必須）', 'キャンセル対象');
+  await click('キャンセル');
+  await click('追加工数を入力');
+  expect(screen.getByLabelText('メモ（必須）').value).toBe('');
+  await userEvent.keyboard('{Escape}');
+  expect(await savedMonth()).toEqual(before);
+});
+
+test('追加の保存失敗ではモーダル内にエラーと入力値を保持する', async () => {
+  await openDetail();
+  await store.saveMonth(client.id, client.revision, '2026-08', { settings: { monthlyHours: 80, carryOverHours: 0 } }, 'other');
+  await click('追加工数を入力');
+  change('追加する工数（h）', '5'); change('メモ（必須）', '追加の見積');
+  await click('＋ 追加工数を記録');
+  await screen.findByRole('alert');
+  expect(screen.getByRole('dialog').textContent).toContain(screen.getByRole('alert').textContent.replace('×', '').trim());
+  expect(screen.getByLabelText('メモ（必須）').value).toBe('追加の見積');
+  expect((await savedMonth()).additions).toHaveLength(0);
+});
+
+
+test('月次・繰越・追加を工数設定に統合し、履歴の下から追加できる', async () => {
+  await openDetail();
+  const settings = screen.getByRole('region', { name: '工数設定' });
+  expect(within(settings).getByRole('heading', { name: '工数設定' })).toBeTruthy();
+  expect([...settings.querySelectorAll('dt')].map(item => item.textContent)).toEqual(['月次', '繰越', '追加']);
+  expect(within(settings).getByText('100h')).toBeTruthy();
+  expect(within(settings).getByText('10h')).toBeTruthy();
+  expect(within(settings).getByText('0h')).toBeTruthy();
+  const add = within(settings).getByRole('button', { name: '追加工数を入力' });
+  const history = within(settings).getByText(/工数追加履歴/).closest('details');
+  expect(history.open).toBe(false);
+  expect(history.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(add.parentElement.lastElementChild).toBe(add);
+  await click('追加工数を入力');
+  change('追加する工数（h）', '5'); change('メモ（必須）', '追加の見積');
+  await click('＋ 追加工数を記録');
+  await screen.findByText('追加工数を記録しました。');
+  const updated = screen.getByRole('region', { name: '工数設定' });
+  expect(within(updated).getByText('5h')).toBeTruthy();
+  await userEvent.click(within(updated).getByText(/工数追加履歴/));
+  expect(within(updated).getByText('追加の見積')).toBeTruthy();
+  await fetchMonth();
+  expect(within(screen.getByRole('region', { name: '工数の内訳' })).queryByText('取得済み')).toBeNull();
+});
+
+
+test('工数設定に月次・繰越の保存値を表示し、保存と月切り替えに追従する', async () => {
+  await openDetail();
+  const readValue = label => within(screen.getByRole('region', { name: '工数設定' })).getByText(label, { selector: 'dt' }).nextElementSibling.textContent;
+  expect(readValue('月次')).toBe('100h');
+  expect(readValue('繰越')).toBe('10h');
+  await click('更新');
+  change('月次工数（h）', '120'); change('繰越工数（h）', '0');
+  await click('保存する');
+  await screen.findByText('月別工数を保存しました。');
+  expect(readValue('月次')).toBe('120h');
+  expect(readValue('繰越')).toBe('0h');
+  await click('次月');
+  expect(readValue('月次')).toBe('未設定');
+  expect(readValue('繰越')).toBe('未設定');
+  await click('前月');
+  expect(readValue('月次')).toBe('120h');
+  expect(readValue('繰越')).toBe('0h');
+});
+
+
+test('青枠の月情報を削除し、月選択の右に取得状態を表示する', async () => {
+  await openDetail();
+  expect(screen.queryByRole('region', { name: '表示中の月' })).toBeNull();
+  const toolbar = screen.getByRole('group', { name: '集計期間の選択' }).parentElement;
+  const month = within(toolbar).getByRole('button', { name: '詳細の対象月' });
+  expect(within(toolbar).getByText('未取得')).toBeTruthy();
+  await fetchMonth();
+  const badge = within(toolbar).getByText('取得済み');
+  expect(month.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await click('次月');
+  expect(within(toolbar).getByText('月未登録')).toBeTruthy();
+  await click('カスタム期間');
+  expect(within(toolbar).getByLabelText('開始日')).toBeTruthy();
+  expect(within(toolbar).getByLabelText('終了日')).toBeTruthy();
+});
+
+
+test('詳細の期間切り替えを左に置き、ラベルを隠して状態テキストを最下部へ移す', async () => {
+  await openDashboard();
+  expect(screen.getByText('対象月', { exact: true })).toBeTruthy();
+  await click('詳細を見る');
+  expect(screen.queryByText('対象月', { exact: true })).toBeNull();
+  const mode = screen.getByRole('group', { name: '集計期間の選択' });
+  const month = screen.getByRole('button', { name: '詳細の対象月' });
+  expect(mode.compareDocumentPosition(month) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const status = screen.getByText('Backlogから対象月の課題を取り込んでください');
+  expect(status.parentElement.lastElementChild).toBe(status);
+  expect(mode.parentElement.contains(status)).toBe(false);
+  await click('カスタム期間');
+  const from = screen.getByLabelText('開始日');
+  expect(mode.compareDocumentPosition(from) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const customStatus = screen.getByText('開始日・終了日を指定して取得してください');
+  expect(customStatus.parentElement.lastElementChild).toBe(customStatus);
+});
+
+
+test('タイトル下に担当者と最終取得を表示し、ヘッダーの設定から基本情報を編集する', async () => {
+  await openDetail();
+  const header = screen.getByRole('heading', { level: 1 }).closest('header');
+  expect(header.textContent).not.toContain('2026年08月');
+  expect(header.textContent).toContain('担当: 担当A');
+  expect(header.textContent).toContain('Backlog最終取得');
+  const fetchButton = within(header).getByRole('button', { name: '↻ Backlogから取り込み' });
+  const settings = within(header).getByRole('button', { name: '設定' });
+  expect(fetchButton.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await click('設定');
+  expect(screen.getByRole('dialog', { name: 'クライアント基本情報' })).toBeTruthy();
+  change('担当者', '担当B');
+  await click('更新する');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(header.textContent).toContain('担当: 担当B');
+  await fetchMonth();
+  expect(header.textContent).toContain('Backlog最終取得');
+  await click('カスタム期間');
+  expect(within(header).getByRole('button', { name: '設定' })).toBeTruthy();
 });
